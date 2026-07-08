@@ -1,5 +1,5 @@
 import dagre from "@dagrejs/dagre";
-import type { Edge, Node } from "@xyflow/react";
+import { Position, type Edge, type Node } from "@xyflow/react";
 import type { ArchitectureGraph, GraphEdgeKind, GraphNodeKind } from "@rav/shared";
 import type { ActiveView } from "./types";
 
@@ -29,8 +29,8 @@ export function toFlowGraph(graph: ArchitectureGraph, activeView: ActiveView): {
   nodes: Node[];
   edges: Edge[];
 } {
-  const allowedEdges = filterEdgeKinds(activeView);
-  const visibleEdges = graph.edges.filter((edge) => allowedEdges.has(edge.kind));
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const visibleEdges = filterVisibleEdges(graph, activeView, nodesById);
   const visibleNodeIds = new Set<string>();
 
   visibleEdges.forEach((edge) => {
@@ -51,6 +51,8 @@ export function toFlowGraph(graph: ArchitectureGraph, activeView: ActiveView): {
     nodes: layouted.map((node) => ({
       id: node.id,
       position: node.position,
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
       data: {
         label: (
           <div className="flow-node">
@@ -74,14 +76,33 @@ export function toFlowGraph(graph: ArchitectureGraph, activeView: ActiveView): {
       source: edge.source,
       target: edge.target,
       animated: edge.kind === "api" || edge.kind === "route",
-      label: edge.label ?? edgeLabels[edge.kind],
-      type: "smoothstep",
+      label: activeView === "architecture" ? undefined : edge.label ?? edgeLabels[edge.kind],
+      labelShowBg: false,
+      type: activeView === "architecture" ? "default" : "smoothstep",
       style: {
         stroke: edge.kind === "jsx" ? "#2563eb" : "#64748b",
         strokeWidth: edge.kind === "jsx" ? 2.4 : 1.8
-      }
+      },
+      zIndex: 0
     }))
   };
+}
+
+function filterVisibleEdges(
+  graph: ArchitectureGraph,
+  activeView: ActiveView,
+  nodesById: Map<string, ArchitectureGraph["nodes"][number]>
+): ArchitectureGraph["edges"] {
+  if (activeView === "architecture") {
+    return graph.edges.filter((edge) => {
+      const source = nodesById.get(edge.source);
+      const target = nodesById.get(edge.target);
+      return edge.kind === "jsx" && source?.kind === "component" && target?.kind === "component";
+    });
+  }
+
+  const allowedEdges = filterEdgeKinds(activeView);
+  return graph.edges.filter((edge) => allowedEdges.has(edge.kind));
 }
 
 function filterEdgeKinds(activeView: ActiveView): Set<GraphEdgeKind> {
@@ -110,7 +131,13 @@ function layoutGraph(
 ): Array<ArchitectureGraph["nodes"][number] & { position: { x: number; y: number } }> {
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: "TB", nodesep: 58, ranksep: 92 });
+  graph.setGraph({
+    rankdir: "TB",
+    nodesep: 90,
+    ranksep: 140,
+    edgesep: 48,
+    ranker: "tight-tree"
+  });
 
   nodes.forEach((node) => graph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
   edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
