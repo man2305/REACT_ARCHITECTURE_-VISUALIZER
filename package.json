@@ -1,0 +1,25 @@
+{
+  "name": "react-architecture-visualizer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scan React projects and generate interactive architecture diagrams.",
+  "workspaces": [
+    "client",
+    "server",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w @rav/shared && npm run build -w @rav/parser && npm run build -w server && npm run build -w client",
+    "typecheck": "npm run typecheck -w @rav/shared && npm run typecheck -w @rav/parser && npm run typecheck -w server && npm run typecheck -w client",
+    "lint": "npm run lint -w client",
+    "start": "npm run start -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
