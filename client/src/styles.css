@@ -96,6 +96,44 @@ h2 {
   gap: 12px;
 }
 
+.github-form {
+  display: grid;
+  gap: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
+  padding: 14px;
+}
+
+.dark .github-form {
+  background: #1e293b;
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.github-form label {
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.github-form input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: inherit;
+  padding: 11px 12px;
+}
+
+.dark .github-form input {
+  border-color: #475569;
+  background: #0f172a;
+}
+
+.github-form input:focus {
+  border-color: #2563eb;
+  outline: 2px solid rgba(37, 99, 235, 0.18);
+}
+
 .upload-zone {
   display: grid;
   cursor: pointer;

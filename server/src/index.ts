@@ -1,7 +1,8 @@
 import cors from "cors";
 import express from "express";
-import type { AnalyzeFilesRequest, AnalyzeResponse } from "@rav/shared";
+import type { AnalyzeFilesRequest, AnalyzeGithubRequest, AnalyzeResponse } from "@rav/shared";
 import { analyzeProject } from "@rav/parser";
+import { fetchGitHubSourceFiles } from "./githubSource.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
@@ -29,6 +30,25 @@ app.post("/api/analyze/files", (request, response) => {
 
   const payload: AnalyzeResponse = { graph };
   response.json(payload);
+});
+
+app.post("/api/analyze/github", async (request, response) => {
+  const body = request.body as Partial<AnalyzeGithubRequest>;
+
+  if (typeof body.repositoryUrl !== "string" || body.repositoryUrl.trim().length === 0) {
+    response.status(400).json({ error: "Expected repositoryUrl to be a GitHub repository URL." });
+    return;
+  }
+
+  try {
+    const files = await fetchGitHubSourceFiles(body.repositoryUrl, body.ref);
+    const payload: AnalyzeResponse = { graph: analyzeProject(files) };
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : "Failed to load GitHub repository."
+    });
+  }
 });
 
 app.listen(port, () => {

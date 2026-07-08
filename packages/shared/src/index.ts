@@ -106,6 +106,11 @@ export type AnalyzeFilesRequest = {
   files: SourceFile[];
 };
 
+export type AnalyzeGithubRequest = {
+  repositoryUrl: string;
+  ref?: string;
+};
+
 export type AnalyzeResponse = {
   graph: ArchitectureGraph;
 };

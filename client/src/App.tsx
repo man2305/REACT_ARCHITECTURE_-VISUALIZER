@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import type { ArchitectureWarning, SourceFile } from "@rav/shared";
-import { analyzeFiles } from "./api";
+import { analyzeFiles, analyzeGitHubRepository } from "./api";
 import { readProjectFiles } from "./fileUpload";
 import { toFlowGraph } from "./graphProjection";
 import { sampleProject } from "./sampleProject";
@@ -21,6 +21,7 @@ export function App() {
   const [isDark, setIsDark] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [githubUrl, setGithubUrl] = useState("");
 
   const flowGraph = useMemo(() => {
     if (!loadedGraph) {
@@ -58,6 +59,29 @@ export function App() {
     await runAnalysis("Uploaded project", files);
   }
 
+  async function handleGitHubSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const repositoryUrl = githubUrl.trim();
+
+    if (!repositoryUrl) {
+      setError("Paste a public GitHub repository URL first.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      const response = await analyzeGitHubRepository(repositoryUrl);
+      const repositoryName = repositoryUrl.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/i, "");
+      setLoadedGraph({ name: repositoryName, graph: response.graph });
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : "Failed to load GitHub repository");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
+
   return (
     <main className={isDark ? "app dark" : "app"}>
       <aside className="sidebar">
@@ -82,6 +106,19 @@ export function App() {
             <span>Upload Folder</span>
             <small>Reads source files locally, then sends text to the analyzer.</small>
           </label>
+
+          <form className="github-form" onSubmit={(event) => void handleGitHubSubmit(event)}>
+            <label htmlFor="github-url">GitHub URL</label>
+            <input
+              id="github-url"
+              placeholder="https://github.com/owner/repo"
+              value={githubUrl}
+              onChange={(event) => setGithubUrl(event.target.value)}
+            />
+            <button className="primary-button" disabled={isAnalyzing} type="submit">
+              {isAnalyzing ? "Loading..." : "Load GitHub Repo"}
+            </button>
+          </form>
 
           <button
             className="primary-button"
