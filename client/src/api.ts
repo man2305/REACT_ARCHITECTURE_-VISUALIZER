@@ -1,7 +1,9 @@
 import type { AnalyzeResponse, SourceFile } from "@rav/shared";
 
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? "";
+
 export async function analyzeFiles(files: SourceFile[]): Promise<AnalyzeResponse> {
-  const response = await fetch("/api/analyze/files", {
+  const response = await fetch(`${API_BASE_URL}/api/analyze/files`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -15,7 +17,7 @@ export async function analyzeFiles(files: SourceFile[]): Promise<AnalyzeResponse
 }
 
 export async function analyzeGitHubRepository(repositoryUrl: string): Promise<AnalyzeResponse> {
-  const response = await fetch("/api/analyze/github", {
+  const response = await fetch(`${API_BASE_URL}/api/analyze/github`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"

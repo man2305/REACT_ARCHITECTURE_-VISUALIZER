@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: react-architecture-visualizer
+    runtime: node
+    rootDir: /
+    buildCommand: npm install && npm run build -w @rav/shared && npm run build -w @rav/parser && npm run build -w server
+    startCommand: npm run start -w server
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
