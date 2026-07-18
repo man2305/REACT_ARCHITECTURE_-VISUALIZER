@@ -74,9 +74,22 @@ export type ArchitectureWarning = {
     | "dead-component"
     | "circular-dependency"
     | "large-component"
-    | "parse-error";
+    | "parse-error"
+    | "god-component"
+    | "high-fan-in"
+    | "high-fan-out"
+    | "deep-nesting"
+    | "hook-overload"
+    | "api-concentration"
+    | "provider-stacking"
+    | "single-responsibility-violation"
+    | "low-cohesion"
+    | "missing-code-splitting"
+    | "inconsistent-exports"
+    | "tight-coupling";
   title: string;
   message: string;
+  suggestion?: string;
   filePath?: string;
   severity: "info" | "warning" | "error";
   metadata?: Record<string, unknown>;

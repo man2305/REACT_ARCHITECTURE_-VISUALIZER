@@ -16,6 +16,19 @@ import {
 } from "./pathUtils.js";
 
 const LARGE_COMPONENT_LINES = 300;
+const GOD_COMPONENT_HOOKS = 5;
+const GOD_COMPONENT_API_CALLS = 3;
+const GOD_COMPONENT_CHILDREN = 6;
+const GOD_COMPONENT_IMPORTS = 8;
+const HIGH_FAN_IN_THRESHOLD = 4;
+const HIGH_FAN_OUT_THRESHOLD = 8;
+const DEEP_NESTING_THRESHOLD = 5;
+const HOOK_OVERLOAD_THRESHOLD = 6;
+const API_CONCENTRATION_RATIO = 0.6;
+const PROVIDER_STACKING_THRESHOLD = 2;
+const SR_VIOLATION_THRESHOLD = 3;
+const LOW_COHESION_IMPORT_THRESHOLD = 7;
+const TIGHT_COUPLING_THRESHOLD = 10;
 
 export function analyzeProject(files: SourceFile[]): ArchitectureGraph {
   const sourceFiles = files
@@ -50,8 +63,20 @@ export function analyzeProject(files: SourceFile[]): ArchitectureGraph {
   warnings.push(...detectLargeComponents(components));
   warnings.push(...detectDeadComponents(components));
   warnings.push(...detectCircularDependencies(components));
+  warnings.push(...detectGodComponents(components));
+  warnings.push(...detectHighFanIn(components));
+  warnings.push(...detectHighFanOut(components));
+  warnings.push(...detectDeepNesting(components));
+  warnings.push(...detectHookOverload(components));
+  warnings.push(...detectApiConcentration(components));
+  warnings.push(...detectProviderStacking(components));
+  warnings.push(...detectSingleResponsibilityViolation(components));
+  warnings.push(...detectLowCohesion(components));
+  warnings.push(...detectMissingCodeSplitting(components));
+  warnings.push(...detectTightCoupling(components));
 
   const { nodes, edges } = buildGraph(components);
+
   const metrics = {
     fileCount: sourceFiles.length,
     componentCount: components.length,
@@ -326,18 +351,336 @@ function dedupeWarnings(warnings: ArchitectureWarning[]): ArchitectureWarning[] 
   });
 }
 
+function detectGodComponents(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => {
+      const concerns = [
+        c.hooks.length >= GOD_COMPONENT_HOOKS,
+        c.apiCalls.length >= GOD_COMPONENT_API_CALLS,
+        c.jsxChildren.length >= GOD_COMPONENT_CHILDREN,
+        c.imports.length >= GOD_COMPONENT_IMPORTS
+      ];
+      return concerns.filter(Boolean).length >= 2;
+    })
+    .map((c) => {
+      const issues: string[] = [];
+      if (c.hooks.length >= GOD_COMPONENT_HOOKS) {
+        issues.push(`${c.hooks.length} hooks`);
+      }
+      if (c.apiCalls.length >= GOD_COMPONENT_API_CALLS) {
+        issues.push(`${c.apiCalls.length} API calls`);
+      }
+      if (c.jsxChildren.length >= GOD_COMPONENT_CHILDREN) {
+        issues.push(`${c.jsxChildren.length} child components`);
+      }
+      if (c.imports.length >= GOD_COMPONENT_IMPORTS) {
+        issues.push(`${c.imports.length} imports`);
+      }
+      return {
+        type: "god-component" as const,
+        title: "God component detected",
+        message: `${c.name} handles too many concerns: ${issues.join(", ")}. It manages ${c.lineCount} lines across ${c.filePath}.`,
+        suggestion: `Split ${c.name} into focused sub-components. Extract data fetching into a custom hook, separate presentation from logic, and delegate child rendering to smaller components.`,
+        filePath: c.filePath,
+        severity: "error" as const,
+        metadata: { hooks: c.hooks.length, apiCalls: c.apiCalls.length, children: c.jsxChildren.length, imports: c.imports.length }
+      };
+    });
+}
+
+function detectHighFanIn(components: ComponentInfo[]): ArchitectureWarning[] {
+  const fanIn = new Map<string, number>();
+  for (const c of components) {
+    for (const child of c.jsxChildren) {
+      fanIn.set(child, (fanIn.get(child) ?? 0) + 1);
+    }
+    for (const route of c.routes) {
+      if (route.component) {
+        fanIn.set(route.component, (fanIn.get(route.component) ?? 0) + 1);
+      }
+    }
+  }
+
+  return components
+    .filter((c) => (fanIn.get(c.name) ?? 0) >= HIGH_FAN_IN_THRESHOLD)
+    .map((c) => {
+      const count = fanIn.get(c.name)!;
+      return {
+        type: "high-fan-in" as const,
+        title: "High fan-in component",
+        message: `${c.name} is used by ${count} other components. Changes to this component have wide impact.`,
+        suggestion: `Stabilize ${c.name}'s API surface. Consider using a React Context or compound component pattern to reduce direct coupling. Ensure props interface is well-typed and versioned.`,
+        filePath: c.filePath,
+        severity: "warning" as const,
+        metadata: { fanIn: count }
+      };
+    });
+}
+
+function detectHighFanOut(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => c.imports.length + c.jsxChildren.length >= HIGH_FAN_OUT_THRESHOLD)
+    .map((c) => {
+      const total = c.imports.length + c.jsxChildren.length;
+      return {
+        type: "high-fan-out" as const,
+        title: "High fan-out component",
+        message: `${c.name} depends on ${total} other modules (${c.imports.length} imports, ${c.jsxChildren.length} children). High coupling increases change fragility.`,
+        suggestion: `Reduce ${c.name}'s dependencies by extracting shared utilities into a services layer, grouping related children into a compound component, or introducing an intermediary container.`,
+        filePath: c.filePath,
+        severity: "warning" as const,
+        metadata: { imports: c.imports.length, children: c.jsxChildren.length, total }
+      };
+    });
+}
+
+function detectDeepNesting(components: ComponentInfo[]): ArchitectureWarning[] {
+  const jsxEdges: Array<{ parent: string; child: string }> = [];
+  for (const c of components) {
+    for (const child of c.jsxChildren) {
+      jsxEdges.push({ parent: c.name, child });
+    }
+  }
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const edge of jsxEdges) {
+    childrenByParent.set(edge.parent, [...(childrenByParent.get(edge.parent) ?? []), edge.child]);
+  }
+
+  const componentSet = new Set(components.map((c) => c.name));
+  const memo = new Map<string, number>();
+
+  function depth(name: string, visiting: Set<string>): number {
+    if (memo.has(name)) {
+      return memo.get(name)!;
+    }
+    if (visiting.has(name)) {
+      return 1;
+    }
+    visiting.add(name);
+    const children = childrenByParent.get(name) ?? [];
+    const childDepth =
+      children.length === 0 ? 0 : Math.max(...children.map((child) => depth(child, visiting)));
+    visiting.delete(name);
+    const result = 1 + childDepth;
+    memo.set(name, result);
+    return result;
+  }
+
+  const warnings: ArchitectureWarning[] = [];
+  const depthMap = new Map<string, number>();
+
+  for (const c of components) {
+    const d = depth(c.name, new Set());
+    depthMap.set(c.name, d);
+    if (d >= DEEP_NESTING_THRESHOLD) {
+      warnings.push({
+        type: "deep-nesting" as const,
+        title: "Deep component nesting",
+        message: `${c.name} sits at depth ${d} in the component tree. Deep nesting increases render complexity and makes prop drilling likely.`,
+        suggestion: `Flatten the component tree around ${c.name}. Consider using React Context for shared state, or restructure layout components to reduce nesting depth.`,
+        filePath: c.filePath,
+        severity: "warning" as const,
+        metadata: { depth: d }
+      });
+    }
+  }
+
+  return warnings;
+}
+
+function detectHookOverload(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => c.hooks.length >= HOOK_OVERLOAD_THRESHOLD)
+    .map((c) => ({
+      type: "hook-overload" as const,
+      title: "Hook overload",
+      message: `${c.name} uses ${c.hooks.length} hooks (${c.hooks.join(", ")}). Excessive hooks indicate mixed concerns.`,
+      suggestion: `Extract related hooks into a custom compound hook. For example, combine data-fetching hooks into useFetchData() and UI-state hooks into useUIState(). This improves readability and testability.`,
+      filePath: c.filePath,
+      severity: "warning" as const,
+      metadata: { hooks: c.hooks, count: c.hooks.length }
+    }));
+}
+
+function detectApiConcentration(components: ComponentInfo[]): ArchitectureWarning[] {
+  const totalApiCalls = components.reduce((sum, c) => sum + c.apiCalls.length, 0);
+  if (totalApiCalls === 0) {
+    return [];
+  }
+
+  const apiComponents = components.filter((c) => c.apiCalls.length > 0);
+  const ratio = apiComponents.length / (components.length || 1);
+
+  if (apiComponents.length <= 1 || ratio > API_CONCENTRATION_RATIO) {
+    return [];
+  }
+
+  const heaviest = [...apiComponents].sort((a, b) => b.apiCalls.length - a.apiCalls.length).slice(0, 3);
+
+  return [
+    {
+      type: "api-concentration" as const,
+      title: "API calls concentrated in few components",
+      message: `${totalApiCalls} API calls are spread across only ${apiComponents.length} of ${components.length} components. Top consumers: ${heaviest.map((c) => `${c.name} (${c.apiCalls.length})`).join(", ")}.`,
+      suggestion: "Centralize API calls into a dedicated service layer or data-fetching hooks (e.g., useUsers(), useAuth()). This separates concerns, enables caching, and makes API changes easier to manage.",
+      severity: "warning" as const,
+      metadata: { totalApiCalls, apiComponentCount: apiComponents.length, totalComponents: components.length }
+    }
+  ];
+}
+
+function detectProviderStacking(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => c.providers.length >= PROVIDER_STACKING_THRESHOLD)
+    .map((c) => ({
+      type: "provider-stacking" as const,
+      title: "Provider stacking",
+      message: `${c.name} nests ${c.providers.length} context providers (${c.providers.join(", ")}). Each provider triggers a re-render of its subtree.`,
+      suggestion: `Reduce provider nesting in ${c.name} by combining related contexts, using a single compound provider, or lifting providers to a layout component. Consider state management libraries for complex shared state.`,
+      filePath: c.filePath,
+      severity: "info" as const,
+      metadata: { providers: c.providers, count: c.providers.length }
+    }));
+}
+
+function detectSingleResponsibilityViolation(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => {
+      const concerns = [
+        c.routes.length > 0,
+        c.apiCalls.length > 0,
+        c.jsxChildren.length >= 3,
+        c.providers.length > 0
+      ];
+      return concerns.filter(Boolean).length >= SR_VIOLATION_THRESHOLD;
+    })
+    .map((c) => {
+      const concerns: string[] = [];
+      if (c.routes.length > 0) {
+        concerns.push(`defines ${c.routes.length} route(s)`);
+      }
+      if (c.apiCalls.length > 0) {
+        concerns.push(`makes ${c.apiCalls.length} API call(s)`);
+      }
+      if (c.jsxChildren.length >= 3) {
+        concerns.push(`renders ${c.jsxChildren.length} children`);
+      }
+      if (c.providers.length > 0) {
+        concerns.push(`provides ${c.providers.length} context(s)`);
+      }
+      return {
+        type: "single-responsibility-violation" as const,
+        title: "Single responsibility violation",
+        message: `${c.name} mixes multiple responsibilities: it ${concerns.join(", ")}. This makes the component hard to test and reason about.`,
+        suggestion: `Apply the Single Responsibility Principle: extract route configuration into a router module, move API calls to a service layer, separate providers into a context module, and keep the component focused on rendering.`,
+        filePath: c.filePath,
+        severity: "warning" as const,
+        metadata: { concerns }
+      };
+    });
+}
+
+function detectLowCohesion(components: ComponentInfo[]): ArchitectureWarning[] {
+  return components
+    .filter((c) => c.imports.length >= LOW_COHESION_IMPORT_THRESHOLD)
+    .map((c) => {
+      const sources = c.imports.map((i) => i.source);
+      const uniqueDirs = new Set(sources.map((s) => s.split("/").slice(0, -1).join("/")));
+      return {
+        type: "low-cohesion" as const,
+        title: "Low cohesion",
+        message: `${c.name} imports from ${c.imports.length} different sources across ${uniqueDirs.size} directories. This suggests the component reaches into too many parts of the codebase.`,
+        suggestion: `Group related functionality into feature modules. ${c.name} should primarily import from its own feature folder and shared utilities. Use dependency inversion (pass data via props/context) instead of direct cross-feature imports.`,
+        filePath: c.filePath,
+        severity: "info" as const,
+        metadata: { importCount: c.imports.length, directorySpread: uniqueDirs.size, sources }
+      };
+    });
+}
+
+function detectMissingCodeSplitting(components: ComponentInfo[]): ArchitectureWarning[] {
+  const routeComponents = new Set<string>();
+  for (const c of components) {
+    for (const route of c.routes) {
+      if (route.component) {
+        routeComponents.add(route.component);
+      }
+    }
+  }
+
+  if (routeComponents.size === 0) {
+    return [];
+  }
+
+  return components
+    .filter((c) => routeComponents.has(c.name) && c.lineCount > 100)
+    .map((c) => ({
+      type: "missing-code-splitting" as const,
+      title: "Code splitting opportunity",
+      message: `${c.name} is a route component with ${c.lineCount} lines but is likely loaded eagerly. Route-level code splitting can reduce initial bundle size.`,
+      suggestion: `Wrap ${c.name} in React.lazy() with a Suspense boundary. Example: const Home = React.lazy(() => import('./pages/Home')). This defers loading until the user navigates to the route.`,
+      filePath: c.filePath,
+      severity: "info" as const,
+      metadata: { lineCount: c.lineCount }
+    }));
+}
+
+function detectTightCoupling(components: ComponentInfo[]): ArchitectureWarning[] {
+  const coupling = new Map<string, number>();
+  for (const c of components) {
+    const totalConnections = c.imports.length + c.jsxChildren.length + c.routes.length + c.apiCalls.length;
+    coupling.set(c.name, totalConnections);
+  }
+
+  return components
+    .filter((c) => (coupling.get(c.name) ?? 0) >= TIGHT_COUPLING_THRESHOLD)
+    .map((c) => {
+      const score = coupling.get(c.name)!;
+      return {
+        type: "tight-coupling" as const,
+        title: "Tightly coupled component",
+        message: `${c.name} has a coupling score of ${score} (imports: ${c.imports.length}, children: ${c.jsxChildren.length}, routes: ${c.routes.length}, APIs: ${c.apiCalls.length}). High coupling makes changes risky.`,
+        suggestion: `Decouple ${c.name} by introducing abstraction layers. Use context for shared state, extract child components, and define clear module boundaries. Aim for a coupling score below ${TIGHT_COUPLING_THRESHOLD}.`,
+        filePath: c.filePath,
+        severity: "warning" as const,
+        metadata: { couplingScore: score, imports: c.imports.length, children: c.jsxChildren.length, routes: c.routes.length, apiCalls: c.apiCalls.length }
+      };
+    });
+}
+
 function scoreArchitecture(
   components: ComponentInfo[],
   warnings: ArchitectureWarning[]
 ): number {
+  const severityPenalty: Record<string, number> = {
+    "error": 18,
+    "warning": 8,
+    "info": 3
+  };
+
+  const typeMultiplier: Record<string, number> = {
+    "circular-dependency": 1.5,
+    "god-component": 1.4,
+    "single-responsibility-violation": 1.3,
+    "tight-coupling": 1.2,
+    "large-component": 1.1,
+    "high-fan-out": 1.1,
+    "deep-nesting": 1.0,
+    "hook-overload": 1.0,
+    "api-concentration": 0.9,
+    "low-cohesion": 0.9,
+    "high-fan-in": 0.8,
+    "provider-stacking": 0.7,
+    "missing-code-splitting": 0.5,
+    "dead-component": 0.6,
+    "parse-error": 1.0
+  };
+
   const penalty = warnings.reduce((total, warning) => {
-    if (warning.severity === "error") {
-      return total + 18;
-    }
-    if (warning.severity === "warning") {
-      return total + 10;
-    }
-    return total + 4;
+    const base = severityPenalty[warning.severity] ?? 4;
+    const multiplier = typeMultiplier[warning.type] ?? 1.0;
+    return total + Math.round(base * multiplier);
   }, 0);
   const complexityPenalty = Math.max(0, components.length - 40);
   return Math.max(0, Math.min(100, 100 - penalty - complexityPenalty));

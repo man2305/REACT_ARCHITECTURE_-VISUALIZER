@@ -4,7 +4,6 @@ React Architecture Visualizer scans a React codebase and turns component relatio
 
 ## MVP Features
 
-- Upload a React project folder from the browser.
 - Load a public GitHub repository URL.
 - Parse JavaScript, TypeScript, JSX, and TSX files with Babel.
 - Detect components, JSX child relationships, imports, React Router routes, hooks, provider usage, API calls, dead components, circular imports, and large files.

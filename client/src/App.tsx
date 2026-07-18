@@ -1,8 +1,15 @@
 import { useMemo, useState } from "react";
-import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider } from "@xyflow/react";
+import {
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  ReactFlowProvider,
+  type Edge as FlowEdge
+} from "@xyflow/react";
 import type { ArchitectureWarning, SourceFile } from "@rav/shared";
 import { analyzeFiles, analyzeGitHubRepository } from "./api";
-import { readProjectFiles } from "./fileUpload";
+import { AiAuditDashboard } from "./components/AiAuditDashboard";
 import { toFlowGraph } from "./graphProjection";
 import { sampleProject } from "./sampleProject";
 import type { ActiveView, LoadedGraph } from "./types";
@@ -12,7 +19,8 @@ const views: Array<{ id: ActiveView; label: string }> = [
   { id: "imports", label: "Imports" },
   { id: "routes", label: "Routes" },
   { id: "hooks", label: "Hooks" },
-  { id: "api", label: "API Calls" }
+  { id: "api", label: "API Calls" },
+  { id: "audit", label: "AI Audit" }
 ];
 
 export function App() {
@@ -22,14 +30,29 @@ export function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
+  const [selectedConnection, setSelectedConnection] = useState<{
+    edgeId: string;
+    source: string;
+    target: string;
+  } | null>(null);
 
   const flowGraph = useMemo(() => {
-    if (!loadedGraph) {
+    if (!loadedGraph || activeView === "audit") {
       return { nodes: [], edges: [] };
     }
 
-    return toFlowGraph(loadedGraph.graph, activeView);
-  }, [activeView, loadedGraph]);
+    return toFlowGraph(
+      loadedGraph.graph,
+      activeView,
+      selectedConnection
+        ? {
+            edgeId: selectedConnection.edgeId,
+            nodeIds: new Set([selectedConnection.source, selectedConnection.target])
+          }
+        : undefined,
+      isDark
+    );
+  }, [activeView, loadedGraph, selectedConnection, isDark]);
 
   async function runAnalysis(name: string, files: SourceFile[]) {
     setIsAnalyzing(true);
@@ -38,25 +61,12 @@ export function App() {
     try {
       const response = await analyzeFiles(files);
       setLoadedGraph({ name, graph: response.graph });
+      setSelectedConnection(null);
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : "Failed to analyze project");
     } finally {
       setIsAnalyzing(false);
     }
-  }
-
-  async function handleFolderUpload(fileList: FileList | null) {
-    if (!fileList?.length) {
-      return;
-    }
-
-    const files = await readProjectFiles(fileList);
-    if (files.length === 0) {
-      setError("No React source files found in that folder.");
-      return;
-    }
-
-    await runAnalysis("Uploaded project", files);
   }
 
   async function handleGitHubSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -75,11 +85,20 @@ export function App() {
       const response = await analyzeGitHubRepository(repositoryUrl);
       const repositoryName = repositoryUrl.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/i, "");
       setLoadedGraph({ name: repositoryName, graph: response.graph });
+      setSelectedConnection(null);
     } catch (analysisError) {
       setError(analysisError instanceof Error ? analysisError.message : "Failed to load GitHub repository");
     } finally {
       setIsAnalyzing(false);
     }
+  }
+
+  function handleEdgeClick(_event: React.MouseEvent, edge: FlowEdge) {
+    setSelectedConnection({
+      edgeId: edge.id,
+      source: edge.source,
+      target: edge.target
+    });
   }
 
   return (
@@ -89,24 +108,12 @@ export function App() {
           <p className="eyebrow">Static Analysis</p>
           <h1>React Architecture Visualizer</h1>
           <p className="summary">
-            Upload a React project and inspect components, imports, routes, hooks, API calls,
+            Load a public GitHub React project and inspect components, imports, routes, hooks, API calls,
             dead code signals, and dependency risks.
           </p>
         </div>
 
         <section className="control-section">
-          <label className="upload-zone">
-            <input
-              type="file"
-              multiple
-              // @ts-expect-error webkitdirectory is supported by Chromium browsers.
-              webkitdirectory=""
-              onChange={(event) => void handleFolderUpload(event.target.files)}
-            />
-            <span>Upload Folder</span>
-            <small>Reads source files locally, then sends text to the analyzer.</small>
-          </label>
-
           <form className="github-form" onSubmit={(event) => void handleGitHubSubmit(event)}>
             <label htmlFor="github-url">GitHub URL</label>
             <input
@@ -127,10 +134,6 @@ export function App() {
           >
             {isAnalyzing ? "Analyzing..." : "Load Sample Project"}
           </button>
-
-          <button className="ghost-button" onClick={() => setIsDark((value) => !value)}>
-            {isDark ? "Light Mode" : "Dark Mode"}
-          </button>
         </section>
 
         {loadedGraph ? <MetricsPanel loadedGraph={loadedGraph} /> : <EmptyPanel />}
@@ -143,33 +146,63 @@ export function App() {
             <span className="project-name">{loadedGraph?.name ?? "No project loaded"}</span>
             <strong>{loadedGraph ? `${loadedGraph.graph.nodes.length} nodes` : "Ready"}</strong>
           </div>
-          <nav className="view-tabs" aria-label="Graph views">
-            {views.map((view) => (
-              <button
-                key={view.id}
-                className={activeView === view.id ? "active" : ""}
-                onClick={() => setActiveView(view.id)}
-              >
-                {view.label}
-              </button>
-            ))}
-          </nav>
+          <div className="topbar-actions">
+            <nav className="view-tabs" aria-label="Graph views">
+              {views.map((view) => (
+                <button
+                  key={view.id}
+                  className={activeView === view.id ? "active" : ""}
+                  onClick={() => setActiveView(view.id)}
+                >
+                  {view.label}
+                </button>
+              ))}
+            </nav>
+
+            <label className="theme-switch" htmlFor="theme-toggle">
+              <span>{isDark ? "Dark" : "Light"}</span>
+              <input
+                id="theme-toggle"
+                checked={isDark}
+                type="checkbox"
+                onChange={(event) => setIsDark(event.target.checked)}
+              />
+              <span className="theme-switch__track" aria-hidden="true">
+                <span className="theme-switch__thumb" />
+              </span>
+            </label>
+          </div>
         </header>
 
         <ReactFlowProvider>
-          <div className="graph-shell">
-            {loadedGraph ? (
-              <ReactFlow nodes={flowGraph.nodes} edges={flowGraph.edges} fitView minZoom={0.2}>
-                <Background />
-                <Controls />
-                <MiniMap pannable zoomable />
-              </ReactFlow>
+          <div className={activeView === "audit" ? "audit-shell" : "graph-shell"}>
+            {loadedGraph && activeView === "audit" ? (
+              <AiAuditDashboard
+                projectName={loadedGraph.name}
+                graph={loadedGraph.graph}
+                enabled={activeView === "audit"}
+              />
+            ) : loadedGraph ? (
+              <>
+                <ReactFlow
+                  nodes={flowGraph.nodes}
+                  edges={flowGraph.edges}
+                  fitView
+                  minZoom={0.2}
+                  onEdgeClick={handleEdgeClick}
+                  onPaneClick={() => setSelectedConnection(null)}
+                >
+                  <Background />
+                  <Controls />
+                  <MiniMap pannable zoomable />
+                </ReactFlow>
+              </>
             ) : (
               <div className="empty-state">
-                <h2>Start with a folder or the sample project.</h2>
+                <h2>Start with a GitHub URL or the sample project.</h2>
                 <p>
                   The first graph focuses on rendered component hierarchy. Switch tabs to inspect
-                  imports, routes, hooks, and API calls.
+                  imports, routes, hooks, API calls, and AI architecture audits.
                 </p>
               </div>
             )}
@@ -194,7 +227,23 @@ function EmptyPanel() {
 
 function MetricsPanel({ loadedGraph }: { loadedGraph: LoadedGraph }) {
   const { metrics, warnings } = loadedGraph.graph;
-  const topWarnings = warnings.slice(0, 5);
+  const [severityFilter, setSeverityFilter] = useState<"all" | "error" | "warning" | "info">("all");
+  const [expandedWarning, setExpandedWarning] = useState<number | null>(null);
+
+  const filteredWarnings = useMemo(() => {
+    if (severityFilter === "all") {
+      return warnings;
+    }
+    return warnings.filter((w) => w.severity === severityFilter);
+  }, [warnings, severityFilter]);
+
+  const severityCounts = useMemo(() => {
+    const counts = { error: 0, warning: 0, info: 0 };
+    for (const w of warnings) {
+      counts[w.severity as keyof typeof counts] += 1;
+    }
+    return counts;
+  }, [warnings]);
 
   return (
     <section className="metrics-panel">
@@ -212,9 +261,52 @@ function MetricsPanel({ loadedGraph }: { loadedGraph: LoadedGraph }) {
       </div>
 
       <div className="warnings-list">
-        <h2>Warnings</h2>
-        {topWarnings.length > 0 ? (
-          topWarnings.map((warning) => <WarningItem key={`${warning.type}-${warning.message}`} warning={warning} />)
+        <h2>Warnings ({filteredWarnings.length})</h2>
+        <div className="warning-filters">
+          <button
+            className={`warning-filter-btn ${severityFilter === "all" ? "active" : ""}`}
+            type="button"
+            onClick={() => setSeverityFilter("all")}
+          >
+            All ({warnings.length})
+          </button>
+          {severityCounts.error > 0 && (
+            <button
+              className={`warning-filter-btn warning-filter-btn--error ${severityFilter === "error" ? "active" : ""}`}
+              type="button"
+              onClick={() => setSeverityFilter("error")}
+            >
+              {severityCounts.error}
+            </button>
+          )}
+          {severityCounts.warning > 0 && (
+            <button
+              className={`warning-filter-btn warning-filter-btn--warning ${severityFilter === "warning" ? "active" : ""}`}
+              type="button"
+              onClick={() => setSeverityFilter("warning")}
+            >
+              {severityCounts.warning}
+            </button>
+          )}
+          {severityCounts.info > 0 && (
+            <button
+              className={`warning-filter-btn warning-filter-btn--info ${severityFilter === "info" ? "active" : ""}`}
+              type="button"
+              onClick={() => setSeverityFilter("info")}
+            >
+              {severityCounts.info}
+            </button>
+          )}
+        </div>
+        {filteredWarnings.length > 0 ? (
+          filteredWarnings.map((warning, index) => (
+            <WarningItem
+              key={`${warning.type}-${warning.message}`}
+              warning={warning}
+              isExpanded={expandedWarning === index}
+              onToggle={() => setExpandedWarning(expandedWarning === index ? null : index)}
+            />
+          ))
         ) : (
           <p>No warnings found.</p>
         )}
@@ -232,12 +324,34 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function WarningItem({ warning }: { warning: ArchitectureWarning }) {
+function WarningItem({
+  warning,
+  isExpanded,
+  onToggle
+}: {
+  warning: ArchitectureWarning;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
   return (
     <article className={`warning warning-${warning.severity}`}>
-      <strong>{warning.title}</strong>
-      <p>{warning.message}</p>
-      {warning.filePath ? <small>{warning.filePath}</small> : null}
+      <button className="warning-header" type="button" onClick={onToggle}>
+        <div className="warning-header__text">
+          <strong>{warning.title}</strong>
+          <p>{warning.message}</p>
+        </div>
+        <span className={`warning-chevron ${isExpanded ? "open" : ""}`} aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {warning.filePath ? <small className="warning-filepath">{warning.filePath}</small> : null}
+      {isExpanded && warning.suggestion ? (
+        <div className="warning-suggestion">
+          <strong>Suggestion:</strong> <span>{warning.suggestion}</span>
+        </div>
+      ) : null}
     </article>
   );
 }
+
+

@@ -102,7 +102,7 @@ async function downloadRepositorySourceFiles(owner: string, repo: string, ref: s
 
 async function describeGitHubError(response: Response): Promise<string> {
   if (response.status === 403) {
-    return "GitHub rate limit reached. Try again later or use folder upload.";
+    return "GitHub rate limit reached. Try again later.";
   }
 
   if (response.status === 404) {

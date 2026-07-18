@@ -16,6 +16,16 @@ const nodeColors: Record<GraphNodeKind, string> = {
   external: "#64748b"
 };
 
+const nodeColorsDark: Record<GraphNodeKind, string> = {
+  component: "#60a5fa",
+  file: "#94a3b8",
+  route: "#a78bfa",
+  hook: "#22d3ee",
+  api: "#f87171",
+  provider: "#4ade80",
+  external: "#94a3b8"
+};
+
 const edgeLabels: Record<GraphEdgeKind, string> = {
   jsx: "renders",
   import: "imports",
@@ -25,7 +35,17 @@ const edgeLabels: Record<GraphEdgeKind, string> = {
   provider: "provides"
 };
 
-export function toFlowGraph(graph: ArchitectureGraph, activeView: ActiveView): {
+type GraphSelection = {
+  edgeId: string;
+  nodeIds: Set<string>;
+};
+
+export function toFlowGraph(
+  graph: ArchitectureGraph,
+  activeView: ActiveView,
+  selection?: GraphSelection,
+  isDark = false
+): {
   nodes: Node[];
   edges: Edge[];
 } {
@@ -48,43 +68,73 @@ export function toFlowGraph(graph: ArchitectureGraph, activeView: ActiveView): {
   const layouted = layoutGraph(visibleNodes, visibleEdges);
 
   return {
-    nodes: layouted.map((node) => ({
-      id: node.id,
-      position: node.position,
-      sourcePosition: Position.Bottom,
-      targetPosition: Position.Top,
-      data: {
-        label: (
-          <div className="flow-node">
-            <span className="flow-node__kind">{node.kind}</span>
-            <strong>{node.label}</strong>
-          </div>
-        )
-      },
-      style: {
-        border: `1px solid ${nodeColors[node.kind]}`,
-        borderLeft: `5px solid ${nodeColors[node.kind]}`,
-        color: "#0f172a",
-        background: "#ffffff",
-        borderRadius: 8,
-        width: NODE_WIDTH,
-        boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)"
-      }
-    })),
-    edges: visibleEdges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      animated: edge.kind === "api" || edge.kind === "route",
-      label: activeView === "architecture" ? undefined : edge.label ?? edgeLabels[edge.kind],
-      labelShowBg: false,
-      type: activeView === "architecture" ? "default" : "smoothstep",
-      style: {
-        stroke: edge.kind === "jsx" ? "#2563eb" : "#64748b",
-        strokeWidth: edge.kind === "jsx" ? 2.4 : 1.8
-      },
-      zIndex: 0
-    }))
+    nodes: layouted.map((node) => {
+      const isSelected = selection?.nodeIds.has(node.id);
+      const colors = isDark ? nodeColorsDark : nodeColors;
+
+      return {
+        id: node.id,
+        position: node.position,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        data: {
+          label: (
+            <div className="flow-node">
+              <span className="flow-node__kind">{node.kind}</span>
+              <strong>{node.label}</strong>
+            </div>
+          )
+        },
+        style: {
+          border: isSelected
+            ? "2px solid #f59e0b"
+            : `1px solid ${colors[node.kind]}`,
+          borderLeft: isSelected
+            ? "6px solid #f59e0b"
+            : `5px solid ${colors[node.kind]}`,
+          color: isDark ? "#e2e8f0" : "#0f172a",
+          background: isSelected ? (isDark ? "#422006" : "#fffbeb") : isDark ? "#1e293b" : "#ffffff",
+          borderRadius: 8,
+          width: NODE_WIDTH,
+          boxShadow: isSelected
+            ? "0 0 0 4px rgba(245, 158, 11, 0.22), 0 16px 32px rgba(15, 23, 42, 0.14)"
+            : isDark
+              ? "0 10px 24px rgba(0, 0, 0, 0.35)"
+              : "0 10px 24px rgba(15, 23, 42, 0.08)",
+          transition: "border-color 200ms ease, box-shadow 200ms ease"
+        }
+      };
+    }),
+    edges: visibleEdges.map((edge) => {
+      const isSelected = selection?.edgeId === edge.id;
+
+      return {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        animated: isSelected || edge.kind === "api" || edge.kind === "route",
+        label: activeView === "architecture" ? undefined : edge.label ?? edgeLabels[edge.kind],
+        labelBgPadding: [8, 4] as [number, number],
+        labelBgBorderRadius: 6,
+        labelBgStyle: {
+          fill: isDark ? "#1e293b" : "#ffffff",
+          fillOpacity: 0.92
+        },
+        labelStyle: {
+          fill: isDark ? "#cbd5e1" : "#334155",
+          fontWeight: 700,
+          fontSize: 11
+        },
+        type: activeView === "architecture" ? "default" : "smoothstep",
+        interactionWidth: 18,
+        style: {
+          stroke: isSelected ? "#f59e0b" : edge.kind === "jsx" ? (isDark ? "#60a5fa" : "#2563eb") : isDark ? "#94a3b8" : "#64748b",
+          strokeOpacity: selection && !isSelected ? 0.32 : 1,
+          strokeWidth: isSelected ? 4 : edge.kind === "jsx" ? 2.4 : 1.8
+        },
+        zIndex: isSelected ? 2 : 0
+      };
+    })
   };
 }
 
