@@ -30,6 +30,8 @@ export function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState<{
     edgeId: string;
     source: string;
@@ -50,9 +52,10 @@ export function App() {
             nodeIds: new Set([selectedConnection.source, selectedConnection.target])
           }
         : undefined,
-      isDark
+      isDark,
+      searchQuery
     );
-  }, [activeView, loadedGraph, selectedConnection, isDark]);
+  }, [activeView, loadedGraph, selectedConnection, isDark, searchQuery]);
 
   async function runAnalysis(name: string, files: SourceFile[]) {
     setIsAnalyzing(true);
@@ -102,42 +105,58 @@ export function App() {
   }
 
   return (
-    <main className={isDark ? "app dark" : "app"}>
-      <aside className="sidebar">
-        <div>
-          <p className="eyebrow">Static Analysis</p>
-          <h1>React Architecture Visualizer</h1>
-          <p className="summary">
-            Load a public GitHub React project and inspect components, imports, routes, hooks, API calls,
-            dead code signals, and dependency risks.
-          </p>
-        </div>
+    <main className={sidebarCollapsed ? `app${isDark ? " dark" : ""} app--sidebar-collapsed` : `app${isDark ? " dark" : ""}`}>
+      <aside className={sidebarCollapsed ? "sidebar sidebar--collapsed" : "sidebar"}>
+        {!sidebarCollapsed ? (
+          <>
+            <div>
+              <p className="eyebrow">Static Analysis</p>
+              <h1>React Architecture Visualizer</h1>
+              <p className="summary">
+                Load a public GitHub React project and inspect components, imports, routes, hooks, API calls,
+                dead code signals, and dependency risks.
+              </p>
+            </div>
 
-        <section className="control-section">
-          <form className="github-form" onSubmit={(event) => void handleGitHubSubmit(event)}>
-            <label htmlFor="github-url">GitHub URL</label>
-            <input
-              id="github-url"
-              placeholder="https://github.com/owner/repo"
-              value={githubUrl}
-              onChange={(event) => setGithubUrl(event.target.value)}
-            />
-            <button className="primary-button" disabled={isAnalyzing} type="submit">
-              {isAnalyzing ? "Loading..." : "Load GitHub Repo"}
-            </button>
-          </form>
+            <section className="control-section">
+              <form className="github-form" onSubmit={(event) => void handleGitHubSubmit(event)}>
+                <label htmlFor="github-url">GitHub URL</label>
+                <input
+                  id="github-url"
+                  placeholder="https://github.com/owner/repo"
+                  value={githubUrl}
+                  onChange={(event) => setGithubUrl(event.target.value)}
+                />
+                <button className="primary-button" disabled={isAnalyzing} type="submit">
+                  {isAnalyzing ? "Loading..." : "Load GitHub Repo"}
+                </button>
+              </form>
 
-          <button
-            className="primary-button"
-            disabled={isAnalyzing}
-            onClick={() => void runAnalysis("Sample project", sampleProject)}
-          >
-            {isAnalyzing ? "Analyzing..." : "Load Sample Project"}
-          </button>
-        </section>
+              <button
+                className="primary-button"
+                disabled={isAnalyzing}
+                onClick={() => void runAnalysis("Sample project", sampleProject)}
+              >
+                {isAnalyzing ? "Analyzing..." : "Load Sample Project"}
+              </button>
+            </section>
 
-        {loadedGraph ? <MetricsPanel loadedGraph={loadedGraph} /> : <EmptyPanel />}
-        {error ? <div className="error-panel">{error}</div> : null}
+            {loadedGraph ? <MetricsPanel loadedGraph={loadedGraph} /> : null}
+            {error ? <div className="error-panel">{error}</div> : null}
+          </>
+        ) : (
+          <div className="sidebar--collapsed-label">
+            <span>{loadedGraph?.name ?? "RAV"}</span>
+          </div>
+        )}
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {sidebarCollapsed ? "›" : "‹"}
+        </button>
       </aside>
 
       <section className="workspace">
@@ -147,6 +166,26 @@ export function App() {
             <strong>{loadedGraph ? `${loadedGraph.graph.nodes.length} nodes` : "Ready"}</strong>
           </div>
           <div className="topbar-actions">
+            {loadedGraph && activeView !== "audit" ? (
+              <div className="graph-search">
+                <input
+                  type="text"
+                  placeholder="Search components..."
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="graph-search__input"
+                />
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    className="graph-search__clear"
+                    onClick={() => setSearchQuery("")}
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <nav className="view-tabs" aria-label="Graph views">
               {views.map((view) => (
                 <button
@@ -210,18 +249,6 @@ export function App() {
         </ReactFlowProvider>
       </section>
     </main>
-  );
-}
-
-function EmptyPanel() {
-  return (
-    <section className="info-panel">
-      <h2>MVP scope</h2>
-      <p>
-        This build covers the core placement-worthy pieces: AST parsing, relationship extraction,
-        graph generation, and React Flow visualization.
-      </p>
-    </section>
   );
 }
 
@@ -338,16 +365,21 @@ function WarningItem({
       <button className="warning-header" type="button" onClick={onToggle}>
         <div className="warning-header__text">
           <strong>{warning.title}</strong>
-          <p>{warning.message}</p>
+          {!isExpanded ? <small className="warning-filepath">{warning.severity.toUpperCase()}</small> : null}
         </div>
         <span className={`warning-chevron ${isExpanded ? "open" : ""}`} aria-hidden="true">
           ▾
         </span>
       </button>
-      {warning.filePath ? <small className="warning-filepath">{warning.filePath}</small> : null}
-      {isExpanded && warning.suggestion ? (
-        <div className="warning-suggestion">
-          <strong>Suggestion:</strong> <span>{warning.suggestion}</span>
+      {isExpanded ? (
+        <div className="warning-body">
+          <p>{warning.message}</p>
+          {warning.filePath ? <small className="warning-filepath">{warning.filePath}</small> : null}
+          {warning.suggestion ? (
+            <div className="warning-suggestion">
+              <strong>Suggestion:</strong> <span>{warning.suggestion}</span>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </article>

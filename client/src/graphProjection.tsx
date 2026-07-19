@@ -44,7 +44,8 @@ export function toFlowGraph(
   graph: ArchitectureGraph,
   activeView: ActiveView,
   selection?: GraphSelection,
-  isDark = false
+  isDark = false,
+  searchQuery = ""
 ): {
   nodes: Node[];
   edges: Edge[];
@@ -67,10 +68,15 @@ export function toFlowGraph(
   const visibleNodes = graph.nodes.filter((node) => visibleNodeIds.has(node.id));
   const layouted = layoutGraph(visibleNodes, visibleEdges);
 
+  const hasSearch = searchQuery.trim().length > 0;
+  const searchLower = searchQuery.toLowerCase();
+
   return {
     nodes: layouted.map((node) => {
       const isSelected = selection?.nodeIds.has(node.id);
       const colors = isDark ? nodeColorsDark : nodeColors;
+      const matchesSearch = !hasSearch || node.label.toLowerCase().includes(searchLower) || node.kind.toLowerCase().includes(searchLower);
+      const isDimmed = hasSearch && !matchesSearch;
 
       return {
         id: node.id,
@@ -96,17 +102,26 @@ export function toFlowGraph(
           background: isSelected ? (isDark ? "#422006" : "#fffbeb") : isDark ? "#1e293b" : "#ffffff",
           borderRadius: 8,
           width: NODE_WIDTH,
+          opacity: isDimmed ? 0.15 : 1,
           boxShadow: isSelected
             ? "0 0 0 4px rgba(245, 158, 11, 0.22), 0 16px 32px rgba(15, 23, 42, 0.14)"
-            : isDark
-              ? "0 10px 24px rgba(0, 0, 0, 0.35)"
-              : "0 10px 24px rgba(15, 23, 42, 0.08)",
-          transition: "border-color 200ms ease, box-shadow 200ms ease"
+            : isDimmed
+              ? "none"
+              : isDark
+                ? "0 10px 24px rgba(0, 0, 0, 0.35)"
+                : "0 10px 24px rgba(15, 23, 42, 0.08)",
+          transition: "opacity 200ms ease, border-color 200ms ease, box-shadow 200ms ease"
         }
       };
     }),
     edges: visibleEdges.map((edge) => {
       const isSelected = selection?.edgeId === edge.id;
+      const sourceNode = nodesById.get(edge.source);
+      const targetNode = nodesById.get(edge.target);
+      const edgeMatchesSearch = !hasSearch ||
+        (sourceNode && sourceNode.label.toLowerCase().includes(searchLower)) ||
+        (targetNode && targetNode.label.toLowerCase().includes(searchLower));
+      const isDimmed = hasSearch && !edgeMatchesSearch;
 
       return {
         id: edge.id,
@@ -129,7 +144,7 @@ export function toFlowGraph(
         interactionWidth: 18,
         style: {
           stroke: isSelected ? "#f59e0b" : edge.kind === "jsx" ? (isDark ? "#60a5fa" : "#2563eb") : isDark ? "#94a3b8" : "#64748b",
-          strokeOpacity: selection && !isSelected ? 0.32 : 1,
+          strokeOpacity: isDimmed ? 0.08 : selection && !isSelected ? 0.32 : 1,
           strokeWidth: isSelected ? 4 : edge.kind === "jsx" ? 2.4 : 1.8
         },
         zIndex: isSelected ? 2 : 0
