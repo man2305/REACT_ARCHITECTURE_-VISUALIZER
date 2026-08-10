@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@rav/parser": ["../packages/parser/src/index.ts"],
+      "@rav/shared": ["../packages/shared/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../packages/parser/src/index.ts",
+    "../packages/shared/src/index.ts",
+    "../client/src/types.ts",
+    "../client/src/graphProjection.tsx",
+    "../client/src/audit/types.ts",
+    "../client/src/audit/projectMetadata.ts",
+    "../client/src/audit/parseAuditReport.ts",
+    "../client/src/audit/aiAuditPrompt.ts",
+    "../client/src/components/CollapsibleCard.tsx",
+    "../client/src/components/MarkdownRenderer.tsx"
+  ],
+  "exclude": ["node_modules", "dist", ".vscode"]
+}

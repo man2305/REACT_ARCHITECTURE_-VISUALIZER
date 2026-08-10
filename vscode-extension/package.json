@@ -1,0 +1,129 @@
+{
+  "name": "react-architecture-visualizer",
+  "displayName": "React Architecture Visualizer",
+  "description": "Scan the open React project and visualize components, imports, routes, hooks, API calls, warnings, and AI architecture audits.",
+  "version": "0.1.2",
+  "publisher": "manish-rai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/man2305/REACT_ARCHITECTURE_-VISUALIZER.git"
+  },
+  "homepage": "https://github.com/man2305/REACT_ARCHITECTURE_-VISUALIZER",
+  "bugs": {
+    "url": "https://github.com/man2305/REACT_ARCHITECTURE_-VISUALIZER/issues"
+  },
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "keywords": [
+    "react",
+    "architecture",
+    "visualizer",
+    "graph",
+    "components",
+    "typescript",
+    "javascript",
+    "jsx",
+    "tsx",
+    "hooks",
+    "routes",
+    "imports",
+    "api",
+    "react-flow",
+    "audit",
+    "analysis"
+  ],
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other",
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "reactArchitectureVisualizer.show",
+        "title": "React Architecture Visualizer: Show Architecture"
+      },
+      {
+        "command": "reactArchitectureVisualizer.refresh",
+        "title": "React Architecture Visualizer: Refresh Analysis"
+      },
+      {
+        "command": "reactArchitectureVisualizer.runAudit",
+        "title": "React Architecture Visualizer: Run AI Audit"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "reactArchitectureVisualizer.show",
+          "when": "resourceLangId == 'javascript' || resourceLangId == 'javascriptreact' || resourceLangId == 'typescript' || resourceLangId == 'typescriptreact'"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "React Architecture Visualizer",
+      "properties": {
+        "reactArchitectureVisualizer.watch.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically re-analyze the project when source files change."
+        },
+        "reactArchitectureVisualizer.analysis.maxFiles": {
+          "type": "number",
+          "default": 120,
+          "description": "Maximum number of source files to include in an analysis."
+        },
+        "reactArchitectureVisualizer.analysis.maxFileBytes": {
+          "type": "number",
+          "default": 500000,
+          "description": "Files larger than this size (bytes) are skipped."
+        },
+        "reactArchitectureVisualizer.openai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key used for the AI architecture audit. Leave empty to use the local metadata analyzer."
+        },
+        "reactArchitectureVisualizer.openai.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "OpenAI chat model used for audits."
+        },
+        "reactArchitectureVisualizer.openai.apiUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1/chat/completions",
+          "description": "OpenAI-compatible chat completions endpoint."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.mjs",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@dagrejs/dagre": "^1.1.4",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.86.0",
+    "@vscode/vsce": "^3.0.0",
+    "@xyflow/react": "^12.3.0",
+    "esbuild": "^0.28.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "typescript": "^5.6.0"
+  }
+}
