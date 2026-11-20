@@ -1,31 +1,60 @@
-import { createMetadataProvider, createOpenAiProvider } from "@rav/audit";
-import type { AiAuditProvider, ProjectAuditMetadata } from "@rav/audit";
+import {
+  AuditServiceError,
+  createMetadataProvider,
+  isValidAuditResponse,
+  parseAuditMarkdown
+} from "@rav/audit";
+import type { ArchitectureAuditReport, ProjectAuditMetadata } from "@rav/audit";
+import { auditGraph, AuditUnavailableError } from "../api";
 
-let activeProvider: AiAuditProvider | null = null;
+export type AuditGenerationMode = "ai" | "fallback";
 
-export function getAuditProvider(): AiAuditProvider {
-  if (activeProvider) {
-    return activeProvider;
+export type AuditGenerationResult = {
+  report: ArchitectureAuditReport;
+  mode: AuditGenerationMode;
+};
+
+/**
+ * Generates an architecture audit for the given project metadata.
+ *
+ * The AI audit runs on the server (POST /api/audit) — the OpenAI key never
+ * reaches the browser. When the server has no key configured it answers
+ * 503 "audit_unavailable" and this falls back to the local rule-based
+ * summary (createMetadataProvider), which only restates static-analysis
+ * numbers. The caller must label fallback reports honestly in the UI;
+ * `mode` (and `report.provider`) tells it which path produced the report.
+ *
+ * `onFallback` fires the moment the fallback path starts, so the UI can
+ * switch its loading copy before the summary is generated.
+ */
+export async function generateArchitectureAudit(
+  metadata: ProjectAuditMetadata,
+  onFallback?: () => void,
+  signal?: AbortSignal
+): Promise<AuditGenerationResult> {
+  try {
+    const { report } = await auditGraph(metadata, signal);
+    return { report, mode: "ai" };
+  } catch (error) {
+    if (!(error instanceof AuditUnavailableError)) {
+      throw error;
+    }
   }
 
-  const apiKey = import.meta.env.VITE_OPENAI_API_KEY as string | undefined;
-  activeProvider = apiKey
-    ? createOpenAiProvider({
-        apiKey,
-        apiUrl:
-          (import.meta.env.VITE_OPENAI_API_URL as string | undefined) ??
-          "https://api.openai.com/v1/chat/completions",
-        model: (import.meta.env.VITE_OPENAI_MODEL as string | undefined) ?? "gpt-4o-mini"
-      })
-    : createMetadataProvider();
-  return activeProvider;
-}
+  onFallback?.();
 
-export function setAuditProvider(provider: AiAuditProvider): void {
-  activeProvider = provider;
-}
+  const provider = createMetadataProvider();
+  const markdown = await provider.generateAudit(metadata);
 
-export async function generateArchitectureAudit(metadata: ProjectAuditMetadata): Promise<string> {
-  const provider = getAuditProvider();
-  return provider.generateAudit(metadata);
+  if (!isValidAuditResponse(markdown)) {
+    throw new AuditServiceError(
+      "The local summary generator returned an incomplete report. Please try again.",
+      "invalid-response"
+    );
+  }
+
+  return {
+    report: parseAuditMarkdown(markdown, metadata.projectName, provider.name),
+    mode: "fallback"
+  };
 }

@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
+    "predev": "npm run build -w @rav/shared && npm run build -w @rav/audit && npm run build -w @rav/ui && npm run build -w @rav/parser",
     "build": "npm run build -w @rav/shared && npm run build -w @rav/audit && npm run build -w @rav/ui && npm run build -w @rav/parser && npm run build -w server && npm run build -w client",
     "build:extension": "npm run build -w vscode-extension",
     "typecheck": "npm run typecheck -w @rav/shared && npm run typecheck -w @rav/audit && npm run typecheck -w @rav/ui && npm run typecheck -w @rav/parser && npm run typecheck -w server && npm run typecheck -w client && npm run typecheck -w vscode-extension",
