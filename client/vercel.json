@@ -1,0 +1,1 @@
+{"outputDirectory":"dist","rewrites":[{"destination":"/index.html","source":"/((?!api/).*)"}]}
