@@ -1,4 +1,5 @@
 import type {
+  ApiCallInfo,
   ArchitectureGraph,
   ArchitectureWarning,
   ComponentInfo,
@@ -8,12 +9,20 @@ import type {
   SourceFile
 } from "@rav/shared";
 import { extractFile } from "./astExtractors.js";
+import type {
+  DynamicImportInfo,
+  HookDetail,
+  ImportBinding,
+  ReExportInfo
+} from "./astExtractors.js";
 import {
   buildPathIndex,
+  DEFAULT_ALIASES,
   isSourceFile,
   normalizePath,
-  resolveRelativeImport
+  resolveImport
 } from "./pathUtils.js";
+import type { ImportAliases } from "./pathUtils.js";
 
 const LARGE_COMPONENT_LINES = 300;
 const GOD_COMPONENT_HOOKS = 5;
@@ -30,14 +39,75 @@ const SR_VIOLATION_THRESHOLD = 3;
 const LOW_COHESION_IMPORT_THRESHOLD = 7;
 const TIGHT_COUPLING_THRESHOLD = 10;
 
-export function analyzeProject(files: SourceFile[]): ArchitectureGraph {
+export type AnalyzeProjectOptions = {
+  /**
+   * Path aliases, e.g. `{ "@": "src" }`. Defaults to `{ "@": "src" }`, the
+   * Vite/Next.js convention. Pass `{}` (plus your own entries) to disable
+   * the default — note the default is always merged in unless overridden.
+   */
+  aliases?: ImportAliases;
+};
+
+type ResolvedBinding = ImportBinding & { resolvedPath?: string };
+type ResolvedReExport = ReExportInfo & { resolvedSource?: string };
+type ResolvedDynamicImport = DynamicImportInfo & { resolvedPath?: string };
+
+type FileAnalysis = {
+  path: string;
+  components: ComponentInfo[];
+  fileImports: ImportInfo[];
+  bindings: ResolvedBinding[];
+  dynamicImports: ResolvedDynamicImport[];
+  reExports: ResolvedReExport[];
+  exportAllSources: string[];
+  defaultExportName?: string;
+  hookDetails: HookDetail[];
+};
+
+/** Project-wide indexes for resolving names to components. */
+type ResolutionContext = {
+  componentsByFile: Map<string, ComponentInfo[]>;
+  componentByKey: Map<string, ComponentInfo>;
+  defaultExportByFile: Map<string, string>;
+  reExportsByFile: Map<string, ResolvedReExport[]>;
+  exportAllByFile: Map<string, string[]>;
+  bindingsByFile: Map<string, ResolvedBinding[]>;
+  /** file -> lazy local name -> dynamic import target (e.g. `Lazy` -> `./Lazy`). */
+  lazyBindingsByFile: Map<
+    string,
+    Map<string, { resolvedPath: string; source: string }>
+  >;
+  /** Components loaded via dynamic import() (incl. React.lazy). */
+  lazyComponentKeys: Set<string>;
+  /** file -> files it imports (static, dynamic, and re-export edges). */
+  fileGraph: Map<string, Set<string>>;
+};
+
+/** Components are identified by file + name — names alone collide across files. */
+function componentKey(filePath: string, name: string): string {
+  return `${filePath}#${name}`;
+}
+
+function componentKeyOf(component: ComponentInfo): string {
+  return componentKey(component.filePath, component.name);
+}
+
+function componentNodeId(filePath: string, name: string): string {
+  return `component:${componentKey(filePath, name)}`;
+}
+
+export function analyzeProject(
+  files: SourceFile[],
+  options: AnalyzeProjectOptions = {}
+): ArchitectureGraph {
+  const aliases = { ...DEFAULT_ALIASES, ...(options.aliases ?? {}) };
   const sourceFiles = files
     .map((file) => ({ ...file, path: normalizePath(file.path) }))
     .filter((file) => isSourceFile(file.path));
 
   const pathIndex = buildPathIndex(sourceFiles.map((file) => file.path));
   const warnings: ArchitectureWarning[] = [];
-  const components: ComponentInfo[] = [];
+  const analyses: FileAnalysis[] = [];
 
   for (const file of sourceFiles) {
     const result = extractFile(file.path, file.content);
@@ -52,35 +122,68 @@ export function analyzeProject(files: SourceFile[]): ArchitectureGraph {
       });
     }
 
-    for (const component of result.components) {
-      const resolvedImports = component.imports.map((importInfo) =>
-        resolveImport(component.filePath, importInfo, pathIndex)
-      );
-      components.push({ ...component, imports: resolvedImports });
-    }
+    const resolve = (source: string): string | undefined =>
+      resolveImport(file.path, source, pathIndex, aliases);
+
+    analyses.push({
+      path: file.path,
+      components: result.components.map((component) => ({
+        ...component,
+        imports: component.imports.map((importInfo) => ({
+          ...importInfo,
+          resolvedPath: resolve(importInfo.source)
+        }))
+      })),
+      fileImports: result.fileImports.map((importInfo) => ({
+        ...importInfo,
+        resolvedPath: resolve(importInfo.source)
+      })),
+      bindings: result.bindings.map((binding) => ({
+        ...binding,
+        resolvedPath: resolve(binding.source)
+      })),
+      dynamicImports: result.dynamicImports.map((dynamicImport) => ({
+        ...dynamicImport,
+        resolvedPath: resolve(dynamicImport.source)
+      })),
+      reExports: result.reExports.map((reExport) => ({
+        ...reExport,
+        resolvedSource: resolve(reExport.source)
+      })),
+      exportAllSources: result.exportAllSources
+        .map((source) => resolve(source))
+        .filter((resolved): resolved is string => resolved !== undefined),
+      defaultExportName: result.defaultExportName,
+      hookDetails: result.hookDetails
+    });
   }
 
+  const components = analyses.flatMap((analysis) => analysis.components);
+  const context = buildResolutionContext(analyses, components);
+  propagateHookApiCalls(components, analyses);
+
   warnings.push(...detectLargeComponents(components));
-  warnings.push(...detectDeadComponents(components));
-  warnings.push(...detectCircularDependencies(components));
+  warnings.push(...detectDeadComponents(components, context));
+  warnings.push(...detectCircularDependencies(context));
   warnings.push(...detectGodComponents(components));
-  warnings.push(...detectHighFanIn(components));
+  warnings.push(...detectHighFanIn(components, context));
   warnings.push(...detectHighFanOut(components));
-  warnings.push(...detectDeepNesting(components));
+  warnings.push(...detectDeepNesting(components, context));
   warnings.push(...detectHookOverload(components));
   warnings.push(...detectApiConcentration(components));
   warnings.push(...detectProviderStacking(components));
   warnings.push(...detectSingleResponsibilityViolation(components));
   warnings.push(...detectLowCohesion(components));
-  warnings.push(...detectMissingCodeSplitting(components));
+  warnings.push(...detectMissingCodeSplitting(components, context));
   warnings.push(...detectTightCoupling(components));
 
-  const { nodes, edges } = buildGraph(components);
+  const { nodes, edges } = buildGraph(components, context);
 
   const metrics = {
     fileCount: sourceFiles.length,
     componentCount: components.length,
-    importCount: components.reduce((total, component) => total + component.imports.length, 0),
+    // File-level imports, counted once per file — not once per component.
+    importCount: analyses.reduce((total, analysis) => total + analysis.fileImports.length, 0),
     routeCount: components.reduce((total, component) => total + component.routes.length, 0),
     hookCount: components.reduce((total, component) => total + component.hooks.length, 0),
     apiCallCount: components.reduce((total, component) => total + component.apiCalls.length, 0),
@@ -98,26 +201,310 @@ export function analyzeProject(files: SourceFile[]): ArchitectureGraph {
   };
 }
 
-function resolveImport(
-  filePath: string,
-  importInfo: ImportInfo,
-  pathIndex: Map<string, string>
-): ImportInfo {
-  return {
-    ...importInfo,
-    resolvedPath: resolveRelativeImport(filePath, importInfo.source, pathIndex)
+function buildResolutionContext(
+  analyses: FileAnalysis[],
+  components: ComponentInfo[]
+): ResolutionContext {
+  const componentsByFile = new Map<string, ComponentInfo[]>();
+  const componentByKey = new Map<string, ComponentInfo>();
+  for (const component of components) {
+    componentsByFile.set(component.filePath, [
+      ...(componentsByFile.get(component.filePath) ?? []),
+      component
+    ]);
+    componentByKey.set(componentKeyOf(component), component);
+  }
+
+  const defaultExportByFile = new Map<string, string>();
+  const reExportsByFile = new Map<string, ResolvedReExport[]>();
+  const exportAllByFile = new Map<string, string[]>();
+  const bindingsByFile = new Map<string, ResolvedBinding[]>();
+  const lazyBindingsByFile = new Map<
+    string,
+    Map<string, { resolvedPath: string; source: string }>
+  >();
+  const fileGraph = new Map<string, Set<string>>();
+
+  for (const analysis of analyses) {
+    if (analysis.defaultExportName) {
+      defaultExportByFile.set(analysis.path, analysis.defaultExportName);
+    }
+    reExportsByFile.set(analysis.path, analysis.reExports);
+    exportAllByFile.set(analysis.path, analysis.exportAllSources);
+    bindingsByFile.set(analysis.path, analysis.bindings);
+
+    const lazyBindings = new Map<string, { resolvedPath: string; source: string }>();
+    for (const dynamicImport of analysis.dynamicImports) {
+      if (dynamicImport.resolvedPath && dynamicImport.localName) {
+        lazyBindings.set(dynamicImport.localName, {
+          resolvedPath: dynamicImport.resolvedPath,
+          source: dynamicImport.source
+        });
+      }
+    }
+    lazyBindingsByFile.set(analysis.path, lazyBindings);
+
+    // File graph from ALL source files — not just component files — so cycles
+    // passing through utility modules are visible.
+    const edges = new Set<string>();
+    for (const importInfo of analysis.fileImports) {
+      if (importInfo.resolvedPath && importInfo.resolvedPath !== analysis.path) {
+        edges.add(importInfo.resolvedPath);
+      }
+    }
+    for (const dynamicImport of analysis.dynamicImports) {
+      if (dynamicImport.resolvedPath && dynamicImport.resolvedPath !== analysis.path) {
+        edges.add(dynamicImport.resolvedPath);
+      }
+    }
+    fileGraph.set(analysis.path, edges);
+  }
+
+  const context: ResolutionContext = {
+    componentsByFile,
+    componentByKey,
+    defaultExportByFile,
+    reExportsByFile,
+    exportAllByFile,
+    bindingsByFile,
+    lazyBindingsByFile,
+    lazyComponentKeys: new Set<string>(),
+    fileGraph
   };
+
+  // A dynamically imported module's default export is loaded lazily (and is
+  // therefore referenced, not dead, and already code-split).
+  for (const analysis of analyses) {
+    for (const dynamicImport of analysis.dynamicImports) {
+      if (!dynamicImport.resolvedPath) {
+        continue;
+      }
+      const target = resolveDefaultComponent(context, dynamicImport.resolvedPath);
+      if (target) {
+        context.lazyComponentKeys.add(componentKeyOf(target));
+      }
+    }
+  }
+
+  return context;
 }
 
-function buildGraph(components: ComponentInfo[]): Pick<ArchitectureGraph, "nodes" | "edges"> {
-  const nodes = new Map<string, GraphNode>();
-  const edges = new Map<string, GraphEdge>();
-  const componentByName = new Map(components.map((component) => [component.name, component]));
-  const componentsByFile = groupComponentsByFile(components);
+/**
+ * API calls made inside a custom hook belong to the components that call the
+ * hook: the component's render triggers them. Propagate each hook's calls
+ * (transitively, through hooks calling hooks) into its callers.
+ */
+function propagateHookApiCalls(
+  components: ComponentInfo[],
+  analyses: FileAnalysis[]
+): void {
+  const hookDefs = new Map<string, { apiCalls: ApiCallInfo[]; calls: Set<string> }>();
+  for (const analysis of analyses) {
+    for (const hook of analysis.hookDetails) {
+      const existing = hookDefs.get(hook.name) ?? { apiCalls: [], calls: new Set<string>() };
+      existing.apiCalls.push(...hook.apiCalls);
+      hook.hooks.forEach((called) => existing.calls.add(called));
+      hookDefs.set(hook.name, existing);
+    }
+  }
+
+  if (hookDefs.size === 0) {
+    return;
+  }
+
+  // Transitive closure with a cycle guard. Results computed while a cycle was
+  // cut are not memoized — they depend on the entry point.
+  const transitive = new Map<string, ApiCallInfo[]>();
+  function collect(
+    name: string,
+    visiting: Set<string>
+  ): { calls: ApiCallInfo[]; tainted: boolean } {
+    const cached = transitive.get(name);
+    if (cached) {
+      return { calls: cached, tainted: false };
+    }
+    if (visiting.has(name)) {
+      return { calls: [], tainted: true };
+    }
+    const def = hookDefs.get(name);
+    if (!def) {
+      return { calls: [], tainted: false };
+    }
+    visiting.add(name);
+    const calls = [...def.apiCalls];
+    let tainted = false;
+    for (const callee of def.calls) {
+      const sub = collect(callee, visiting);
+      tainted = tainted || sub.tainted;
+      calls.push(...sub.calls);
+    }
+    visiting.delete(name);
+    if (!tainted) {
+      transitive.set(name, calls);
+    }
+    return { calls, tainted };
+  }
 
   for (const component of components) {
+    const seen = new Set(
+      component.apiCalls.map((call) => `${call.method}:${call.endpoint}`)
+    );
+    for (const hook of component.hooks) {
+      for (const call of collect(hook, new Set()).calls) {
+        const key = `${call.method}:${call.endpoint}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          component.apiCalls.push(call);
+        }
+      }
+    }
+  }
+}
+
+/** Resolve a named export to a component, following barrel re-exports. */
+function resolveExportedComponent(
+  context: ResolutionContext,
+  file: string,
+  exportedName: string,
+  seen: Set<string> = new Set()
+): ComponentInfo | undefined {
+  const direct = (context.componentsByFile.get(file) ?? []).find(
+    (component) => component.name === exportedName
+  );
+  if (direct) {
+    return direct;
+  }
+
+  for (const reExport of context.reExportsByFile.get(file) ?? []) {
+    if (reExport.exportedName !== exportedName || !reExport.resolvedSource) {
+      continue;
+    }
+    const key = `${reExport.resolvedSource}#${reExport.localName}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const found = resolveExportedComponent(
+      context,
+      reExport.resolvedSource,
+      reExport.localName,
+      seen
+    );
+    if (found) {
+      return found;
+    }
+  }
+
+  for (const source of context.exportAllByFile.get(file) ?? []) {
+    const key = `${source}#${exportedName}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const found = resolveExportedComponent(context, source, exportedName, seen);
+    if (found) {
+      return found;
+    }
+  }
+
+  return undefined;
+}
+
+/** Resolve a module's default export to a component, if it is one. */
+function resolveDefaultComponent(
+  context: ResolutionContext,
+  file: string
+): ComponentInfo | undefined {
+  const name = context.defaultExportByFile.get(file);
+  if (name) {
+    const direct = context.componentByKey.get(componentKey(file, name));
+    if (direct) {
+      return direct;
+    }
+  }
+  // Default re-exported from another module: `export { Foo as default }`.
+  return resolveExportedComponent(context, file, "default");
+}
+
+/** Resolve an import binding to the component it imports, if it is one. */
+function resolveBindingTarget(
+  context: ResolutionContext,
+  binding: ResolvedBinding
+): ComponentInfo | undefined {
+  if (!binding.resolvedPath) {
+    return undefined;
+  }
+  if (binding.kind === "default") {
+    return resolveDefaultComponent(context, binding.resolvedPath);
+  }
+  if (binding.kind === "named") {
+    return resolveExportedComponent(context, binding.resolvedPath, binding.importedName);
+  }
+  // Namespace imports (`import * as ns`) have no single target component.
+  return undefined;
+}
+
+/**
+ * Resolve a name used as a JSX element (or route component) in a file to the
+ * component it refers to: a component defined in the same file, an imported
+ * component (via the file's import bindings), or a lazy-loaded component.
+ * Returns `undefined` for library components (e.g. `<Routes/>`, `<Loader2/>`).
+ */
+function resolveJsxChild(
+  context: ResolutionContext,
+  name: string,
+  fromComponent: ComponentInfo
+): ComponentInfo | undefined {
+  const candidates = [name];
+  // Route components can be member expressions (`<Layout.Home/>`); try the
+  // leaf name as well.
+  if (name.includes(".")) {
+    candidates.push(name.split(".").at(-1) ?? name);
+  }
+
+  for (const candidate of candidates) {
+    const local = (context.componentsByFile.get(fromComponent.filePath) ?? []).find(
+      (component) => component.name === candidate
+    );
+    if (local) {
+      return local;
+    }
+
+    const binding = (context.bindingsByFile.get(fromComponent.filePath) ?? []).find(
+      (entry) => entry.localName === candidate
+    );
+    if (binding) {
+      const target = resolveBindingTarget(context, binding);
+      if (target) {
+        return target;
+      }
+    }
+
+    const lazyBinding = context.lazyBindingsByFile
+      .get(fromComponent.filePath)
+      ?.get(candidate);
+    if (lazyBinding) {
+      const target = resolveDefaultComponent(context, lazyBinding.resolvedPath);
+      if (target) {
+        return target;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function buildGraph(
+  components: ComponentInfo[],
+  context: ResolutionContext
+): Pick<ArchitectureGraph, "nodes" | "edges"> {
+  const nodes = new Map<string, GraphNode>();
+  const edges = new Map<string, GraphEdge>();
+
+  for (const component of components) {
+    const selfId = componentNodeId(component.filePath, component.name);
     upsertNode(nodes, {
-      id: componentNodeId(component.name),
+      id: selfId,
       label: component.name,
       kind: "component",
       filePath: component.filePath,
@@ -129,38 +516,91 @@ function buildGraph(components: ComponentInfo[]): Pick<ArchitectureGraph, "nodes
     });
 
     for (const child of component.jsxChildren) {
-      upsertNode(nodes, {
-        id: componentNodeId(child),
-        label: child,
-        kind: componentByName.has(child) ? "component" : "external"
-      });
-      addEdge(edges, componentNodeId(component.name), componentNodeId(child), "jsx", undefined, {
-        props: component.propsToChildren[child] ?? []
-      });
-    }
-
-    for (const importInfo of component.imports) {
-      const importedComponents = importInfo.resolvedPath
-        ? componentsByFile.get(importInfo.resolvedPath) ?? []
-        : [];
-
-      if (importedComponents.length === 0) {
-        const externalId = `external:${importInfo.source}`;
+      const target = resolveJsxChild(context, child, component);
+      if (target) {
+        const targetId = componentNodeId(target.filePath, target.name);
+        upsertNode(nodes, {
+          id: targetId,
+          label: target.name,
+          kind: "component",
+          filePath: target.filePath
+        });
+        addEdge(edges, selfId, targetId, "jsx", undefined, {
+          props: component.propsToChildren[child] ?? []
+        });
+      } else {
+        const externalId = `external:${child}`;
         upsertNode(nodes, {
           id: externalId,
-          label: importInfo.source,
+          label: child,
           kind: "external"
         });
-        addEdge(edges, componentNodeId(component.name), externalId, "import");
+        addEdge(edges, selfId, externalId, "jsx", undefined, {
+          props: component.propsToChildren[child] ?? []
+        });
+      }
+    }
+
+    // Import edges follow the component's used bindings, so each edge points
+    // at the component actually imported — not every component in the file.
+    const usedNames = new Set(
+      component.imports.flatMap((importInfo) => importInfo.importedNames)
+    );
+    for (const binding of context.bindingsByFile.get(component.filePath) ?? []) {
+      if (!usedNames.has(binding.localName)) {
+        continue;
       }
 
-      for (const importedComponent of importedComponents) {
+      if (!binding.resolvedPath) {
+        const externalId = `external:${binding.source}`;
+        upsertNode(nodes, {
+          id: externalId,
+          label: binding.source,
+          kind: "external"
+        });
+        addEdge(edges, selfId, externalId, "import");
+        continue;
+      }
+
+      const target = resolveBindingTarget(context, binding);
+      if (target) {
         addEdge(
           edges,
-          componentNodeId(component.name),
-          componentNodeId(importedComponent.name),
+          selfId,
+          componentNodeId(target.filePath, target.name),
           "import",
-          importInfo.source
+          binding.source
+        );
+      } else {
+        // Resolved to a local module with no matching component (utils, API
+        // client, constants): a file node, not an external dependency.
+        const fileId = `file:${binding.resolvedPath}`;
+        upsertNode(nodes, {
+          id: fileId,
+          label: binding.resolvedPath,
+          kind: "file",
+          filePath: binding.resolvedPath
+        });
+        addEdge(edges, selfId, fileId, "import", binding.source);
+      }
+    }
+
+    // Dynamic imports (React.lazy): an import edge to the lazily loaded
+    // component, so the imports view shows the dependency too.
+    for (const [localName, lazyBinding] of context.lazyBindingsByFile.get(
+      component.filePath
+    ) ?? []) {
+      if (!component.jsxChildren.includes(localName)) {
+        continue;
+      }
+      const target = resolveDefaultComponent(context, lazyBinding.resolvedPath);
+      if (target) {
+        addEdge(
+          edges,
+          selfId,
+          componentNodeId(target.filePath, target.name),
+          "import",
+          lazyBinding.source
         );
       }
     }
@@ -173,28 +613,41 @@ function buildGraph(components: ComponentInfo[]): Pick<ArchitectureGraph, "nodes
         kind: "route",
         metadata: route
       });
-      addEdge(edges, componentNodeId(component.name), routeId, "route", route.component);
+      addEdge(edges, selfId, routeId, "route", route.component);
 
       if (route.component) {
-        upsertNode(nodes, {
-          id: componentNodeId(route.component),
-          label: route.component,
-          kind: componentByName.has(route.component) ? "component" : "external"
-        });
-        addEdge(edges, routeId, componentNodeId(route.component), "route");
+        const target = resolveJsxChild(context, route.component, component);
+        if (target) {
+          const targetId = componentNodeId(target.filePath, target.name);
+          upsertNode(nodes, {
+            id: targetId,
+            label: target.name,
+            kind: "component",
+            filePath: target.filePath
+          });
+          addEdge(edges, routeId, targetId, "route");
+        } else {
+          const externalId = `external:${route.component}`;
+          upsertNode(nodes, {
+            id: externalId,
+            label: route.component,
+            kind: "external"
+          });
+          addEdge(edges, routeId, externalId, "route");
+        }
       }
     }
 
     for (const hook of component.hooks) {
       const hookId = `hook:${hook}`;
       upsertNode(nodes, { id: hookId, label: hook, kind: "hook" });
-      addEdge(edges, componentNodeId(component.name), hookId, "hook");
+      addEdge(edges, selfId, hookId, "hook");
     }
 
     for (const provider of component.providers) {
       const providerId = `provider:${provider}`;
       upsertNode(nodes, { id: providerId, label: provider, kind: "provider" });
-      addEdge(edges, componentNodeId(component.name), providerId, "provider");
+      addEdge(edges, selfId, providerId, "provider");
     }
 
     for (const apiCall of component.apiCalls) {
@@ -205,7 +658,7 @@ function buildGraph(components: ComponentInfo[]): Pick<ArchitectureGraph, "nodes
         kind: "api",
         metadata: apiCall
       });
-      addEdge(edges, componentNodeId(component.name), apiId, "api");
+      addEdge(edges, selfId, apiId, "api");
     }
   }
 
@@ -213,20 +666,6 @@ function buildGraph(components: ComponentInfo[]): Pick<ArchitectureGraph, "nodes
     nodes: [...nodes.values()],
     edges: [...edges.values()]
   };
-}
-
-function groupComponentsByFile(components: ComponentInfo[]): Map<string, ComponentInfo[]> {
-  const map = new Map<string, ComponentInfo[]>();
-
-  for (const component of components) {
-    map.set(component.filePath, [...(map.get(component.filePath) ?? []), component]);
-  }
-
-  return map;
-}
-
-function componentNodeId(name: string): string {
-  return `component:${name}`;
 }
 
 function upsertNode(nodes: Map<string, GraphNode>, node: GraphNode): void {
@@ -257,26 +696,46 @@ function detectLargeComponents(components: ComponentInfo[]): ArchitectureWarning
     }));
 }
 
-function detectDeadComponents(components: ComponentInfo[]): ArchitectureWarning[] {
-  const referenced = new Set<string>();
-  const importedNames = new Set<string>();
+function detectDeadComponents(
+  components: ComponentInfo[],
+  context: ResolutionContext
+): ArchitectureWarning[] {
+  const referenced = new Set<string>(context.lazyComponentKeys);
+  const imported = new Set<string>();
 
   for (const component of components) {
-    component.jsxChildren.forEach((child) => referenced.add(child));
-    component.routes.forEach((route) => {
-      if (route.component) {
-        referenced.add(route.component);
+    for (const child of component.jsxChildren) {
+      const target = resolveJsxChild(context, child, component);
+      if (target) {
+        referenced.add(componentKeyOf(target));
       }
-    });
-    component.imports.forEach((importInfo) => {
-      importInfo.importedNames.forEach((name) => importedNames.add(name));
-    });
+    }
+    for (const route of component.routes) {
+      if (route.component) {
+        const target = resolveJsxChild(context, route.component, component);
+        if (target) {
+          referenced.add(componentKeyOf(target));
+        }
+      }
+    }
+  }
+
+  // A component imported anywhere counts as used — "possibly unused" is an
+  // info-level hint, so err on the side of fewer false positives.
+  for (const bindings of context.bindingsByFile.values()) {
+    for (const binding of bindings) {
+      const target = resolveBindingTarget(context, binding);
+      if (target) {
+        imported.add(componentKeyOf(target));
+      }
+    }
   }
 
   return components
     .filter((component) => {
       const rootLike = ["App", "Root", "Main"].includes(component.name);
-      return !rootLike && !referenced.has(component.name) && !importedNames.has(component.name);
+      const key = componentKeyOf(component);
+      return !rootLike && !referenced.has(key) && !imported.has(key);
     })
     .map((component) => ({
       type: "dead-component",
@@ -287,18 +746,8 @@ function detectDeadComponents(components: ComponentInfo[]): ArchitectureWarning[
     }));
 }
 
-function detectCircularDependencies(components: ComponentInfo[]): ArchitectureWarning[] {
-  const fileGraph = new Map<string, Set<string>>();
-  for (const component of components) {
-    const edges = fileGraph.get(component.filePath) ?? new Set<string>();
-    component.imports.forEach((importInfo) => {
-      if (importInfo.resolvedPath && importInfo.resolvedPath !== component.filePath) {
-        edges.add(importInfo.resolvedPath);
-      }
-    });
-    fileGraph.set(component.filePath, edges);
-  }
-
+function detectCircularDependencies(context: ResolutionContext): ArchitectureWarning[] {
+  const fileGraph = context.fileGraph;
   const warnings: ArchitectureWarning[] = [];
   const visited = new Set<string>();
   const stack = new Set<string>();
@@ -306,7 +755,9 @@ function detectCircularDependencies(components: ComponentInfo[]): ArchitectureWa
   function visit(file: string, trail: string[]): void {
     if (stack.has(file)) {
       const cycleStart = trail.indexOf(file);
-      const cycle = [...trail.slice(cycleStart), file];
+      // `trail` already ends with `file` (appended by the caller), so slicing
+      // alone closes the cycle — appending `file` again would duplicate it.
+      const cycle = trail.slice(cycleStart);
       warnings.push({
         type: "circular-dependency",
         title: "Circular dependency",
@@ -388,23 +839,34 @@ function detectGodComponents(components: ComponentInfo[]): ArchitectureWarning[]
     });
 }
 
-function detectHighFanIn(components: ComponentInfo[]): ArchitectureWarning[] {
+function detectHighFanIn(
+  components: ComponentInfo[],
+  context: ResolutionContext
+): ArchitectureWarning[] {
   const fanIn = new Map<string, number>();
+  const countUse = (component: ComponentInfo, name: string): void => {
+    const target = resolveJsxChild(context, name, component);
+    if (target) {
+      const key = componentKeyOf(target);
+      fanIn.set(key, (fanIn.get(key) ?? 0) + 1);
+    }
+  };
+
   for (const c of components) {
     for (const child of c.jsxChildren) {
-      fanIn.set(child, (fanIn.get(child) ?? 0) + 1);
+      countUse(c, child);
     }
     for (const route of c.routes) {
       if (route.component) {
-        fanIn.set(route.component, (fanIn.get(route.component) ?? 0) + 1);
+        countUse(c, route.component);
       }
     }
   }
 
   return components
-    .filter((c) => (fanIn.get(c.name) ?? 0) >= HIGH_FAN_IN_THRESHOLD)
+    .filter((c) => (fanIn.get(componentKeyOf(c)) ?? 0) >= HIGH_FAN_IN_THRESHOLD)
     .map((c) => {
-      const count = fanIn.get(c.name)!;
+      const count = fanIn.get(componentKeyOf(c))!;
       return {
         type: "high-fan-in" as const,
         title: "High fan-in component",
@@ -434,56 +896,89 @@ function detectHighFanOut(components: ComponentInfo[]): ArchitectureWarning[] {
     });
 }
 
-function detectDeepNesting(components: ComponentInfo[]): ArchitectureWarning[] {
-  const jsxEdges: Array<{ parent: string; child: string }> = [];
+function detectDeepNesting(
+  components: ComponentInfo[],
+  context: ResolutionContext
+): ArchitectureWarning[] {
+  const childrenByKey = new Map<string, string[]>();
+  const hasParent = new Set<string>();
+
   for (const c of components) {
+    const children: string[] = [];
     for (const child of c.jsxChildren) {
-      jsxEdges.push({ parent: c.name, child });
+      const target = resolveJsxChild(context, child, c);
+      if (target) {
+        const childKey = componentKeyOf(target);
+        children.push(childKey);
+        hasParent.add(childKey);
+      }
     }
+    childrenByKey.set(componentKeyOf(c), children);
   }
 
-  const childrenByParent = new Map<string, string[]>();
-  for (const edge of jsxEdges) {
-    childrenByParent.set(edge.parent, [...(childrenByParent.get(edge.parent) ?? []), edge.child]);
-  }
+  // One warning per nesting chain, at its root — not one per component in the
+  // chain. A pure cycle has no roots; evaluate a single representative.
+  const roots = components
+    .map((component) => componentKeyOf(component))
+    .filter((key) => !hasParent.has(key));
+  const seeds =
+    roots.length > 0
+      ? roots
+      : components.length > 0
+        ? [componentKeyOf(components[0])]
+        : [];
 
-  const componentSet = new Set(components.map((c) => c.name));
-  const memo = new Map<string, number>();
-
-  function depth(name: string, visiting: Set<string>): number {
-    if (memo.has(name)) {
-      return memo.get(name)!;
+  // Longest chain from a node, with a cycle guard. Results computed while a
+  // cycle was cut are not memoized — they depend on the entry point.
+  const memo = new Map<string, { depth: number; deepest: string }>();
+  function longestChain(
+    key: string,
+    visiting: Set<string>
+  ): { depth: number; deepest: string; tainted: boolean } {
+    const cached = memo.get(key);
+    if (cached) {
+      return { ...cached, tainted: false };
     }
-    if (visiting.has(name)) {
-      return 1;
+    if (visiting.has(key)) {
+      return { depth: 0, deepest: key, tainted: true };
     }
-    visiting.add(name);
-    const children = childrenByParent.get(name) ?? [];
-    const childDepth =
-      children.length === 0 ? 0 : Math.max(...children.map((child) => depth(child, visiting)));
-    visiting.delete(name);
-    const result = 1 + childDepth;
-    memo.set(name, result);
-    return result;
+    visiting.add(key);
+    let best = { depth: 1, deepest: key };
+    let tainted = false;
+    for (const child of childrenByKey.get(key) ?? []) {
+      const sub = longestChain(child, visiting);
+      tainted = tainted || sub.tainted;
+      if (1 + sub.depth > best.depth) {
+        best = { depth: 1 + sub.depth, deepest: sub.deepest };
+      }
+    }
+    visiting.delete(key);
+    if (!tainted) {
+      memo.set(key, best);
+    }
+    return { ...best, tainted };
   }
 
   const warnings: ArchitectureWarning[] = [];
-  const depthMap = new Map<string, number>();
-
-  for (const c of components) {
-    const d = depth(c.name, new Set());
-    depthMap.set(c.name, d);
-    if (d >= DEEP_NESTING_THRESHOLD) {
-      warnings.push({
-        type: "deep-nesting" as const,
-        title: "Deep component nesting",
-        message: `${c.name} sits at depth ${d} in the component tree. Deep nesting increases render complexity and makes prop drilling likely.`,
-        suggestion: `Flatten the component tree around ${c.name}. Consider using React Context for shared state, or restructure layout components to reduce nesting depth.`,
-        filePath: c.filePath,
-        severity: "warning" as const,
-        metadata: { depth: d }
-      });
+  for (const seed of seeds) {
+    const { depth, deepest } = longestChain(seed, new Set());
+    if (depth < DEEP_NESTING_THRESHOLD) {
+      continue;
     }
+    const root = context.componentByKey.get(seed);
+    const deepestComponent = context.componentByKey.get(deepest);
+    if (!root) {
+      continue;
+    }
+    warnings.push({
+      type: "deep-nesting" as const,
+      title: "Deep component nesting",
+      message: `${root.name} starts a component chain ${depth} levels deep (deepest: ${deepestComponent?.name ?? deepest}). Deep nesting increases render complexity and makes prop drilling likely.`,
+      suggestion: `Flatten the component tree around ${root.name}. Consider using React Context for shared state, or restructure layout components to reduce nesting depth.`,
+      filePath: root.filePath,
+      severity: "warning" as const,
+      metadata: { depth, deepest: deepestComponent?.name ?? deepest }
+    });
   }
 
   return warnings;
@@ -510,13 +1005,33 @@ function detectApiConcentration(components: ComponentInfo[]): ArchitectureWarnin
   }
 
   const apiComponents = components.filter((c) => c.apiCalls.length > 0);
-  const ratio = apiComponents.length / (components.length || 1);
+  const sorted = [...apiComponents].sort((a, b) => b.apiCalls.length - a.apiCalls.length);
 
-  if (apiComponents.length <= 1 || ratio > API_CONCENTRATION_RATIO) {
+  // A single component holding every API call is the MOST concentrated case,
+  // not the absence of one.
+  if (apiComponents.length === 1) {
+    if (totalApiCalls < GOD_COMPONENT_API_CALLS) {
+      return [];
+    }
+    const only = sorted[0];
+    return [
+      {
+        type: "api-concentration" as const,
+        title: "API calls concentrated in one component",
+        message: `All ${totalApiCalls} API calls live in ${only.name}. A single component owning every request becomes a bottleneck for caching, error handling, and testing.`,
+        suggestion: "Centralize API calls into a dedicated service layer or data-fetching hooks (e.g., useUsers(), useAuth()). This separates concerns, enables caching, and makes API changes easier to manage.",
+        severity: "warning" as const,
+        metadata: { totalApiCalls, apiComponentCount: 1, totalComponents: components.length }
+      }
+    ];
+  }
+
+  const ratio = apiComponents.length / (components.length || 1);
+  if (ratio > API_CONCENTRATION_RATIO) {
     return [];
   }
 
-  const heaviest = [...apiComponents].sort((a, b) => b.apiCalls.length - a.apiCalls.length).slice(0, 3);
+  const heaviest = sorted.slice(0, 3);
 
   return [
     {
@@ -599,12 +1114,18 @@ function detectLowCohesion(components: ComponentInfo[]): ArchitectureWarning[] {
     });
 }
 
-function detectMissingCodeSplitting(components: ComponentInfo[]): ArchitectureWarning[] {
+function detectMissingCodeSplitting(
+  components: ComponentInfo[],
+  context: ResolutionContext
+): ArchitectureWarning[] {
   const routeComponents = new Set<string>();
   for (const c of components) {
     for (const route of c.routes) {
       if (route.component) {
-        routeComponents.add(route.component);
+        const target = resolveJsxChild(context, route.component, c);
+        if (target) {
+          routeComponents.add(componentKeyOf(target));
+        }
       }
     }
   }
@@ -614,7 +1135,14 @@ function detectMissingCodeSplitting(components: ComponentInfo[]): ArchitectureWa
   }
 
   return components
-    .filter((c) => routeComponents.has(c.name) && c.lineCount > 100)
+    .filter(
+      (c) =>
+        routeComponents.has(componentKeyOf(c)) &&
+        c.lineCount > 100 &&
+        // Already loaded via React.lazy() / dynamic import() — splitting
+        // is in place, so there is nothing to flag.
+        !context.lazyComponentKeys.has(componentKeyOf(c))
+    )
     .map((c) => ({
       type: "missing-code-splitting" as const,
       title: "Code splitting opportunity",
@@ -630,13 +1158,13 @@ function detectTightCoupling(components: ComponentInfo[]): ArchitectureWarning[]
   const coupling = new Map<string, number>();
   for (const c of components) {
     const totalConnections = c.imports.length + c.jsxChildren.length + c.routes.length + c.apiCalls.length;
-    coupling.set(c.name, totalConnections);
+    coupling.set(componentKeyOf(c), totalConnections);
   }
 
   return components
-    .filter((c) => (coupling.get(c.name) ?? 0) >= TIGHT_COUPLING_THRESHOLD)
+    .filter((c) => (coupling.get(componentKeyOf(c)) ?? 0) >= TIGHT_COUPLING_THRESHOLD)
     .map((c) => {
-      const score = coupling.get(c.name)!;
+      const score = coupling.get(componentKeyOf(c))!;
       return {
         type: "tight-coupling" as const,
         title: "Tightly coupled component",
@@ -653,6 +1181,11 @@ function scoreArchitecture(
   components: ComponentInfo[],
   warnings: ArchitectureWarning[]
 ): number {
+  // No components, nothing to score — an empty project is not a perfect one.
+  if (components.length === 0) {
+    return 0;
+  }
+
   const severityPenalty: Record<string, number> = {
     "error": 18,
     "warning": 8,
@@ -682,6 +1215,12 @@ function scoreArchitecture(
     const multiplier = typeMultiplier[warning.type] ?? 1.0;
     return total + Math.round(base * multiplier);
   }, 0);
-  const complexityPenalty = Math.max(0, components.length - 40);
-  return Math.max(0, Math.min(100, 100 - penalty - complexityPenalty));
+
+  // Normalize by project size: the score reflects warning DENSITY (average
+  // penalty per component), so large projects are not punished for existing.
+  // ~25 points per component (e.g. every component a god component) scores 0;
+  // one average warning per component scores ~68. There is no raw size
+  // penalty — component count is not a defect.
+  const density = penalty / components.length;
+  return Math.max(0, Math.min(100, Math.round(100 - density * 4)));
 }
