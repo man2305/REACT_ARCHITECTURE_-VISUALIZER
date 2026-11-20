@@ -18,6 +18,7 @@ export type OpenAiConfig = {
   apiUrl: string;
   model: string;
   timeoutMs?: number;
+  maxTokens?: number;
 };
 
 export function createOpenAiProvider(config: OpenAiConfig): AiAuditProvider {
@@ -37,6 +38,7 @@ export function createOpenAiProvider(config: OpenAiConfig): AiAuditProvider {
           body: JSON.stringify({
             model: config.model,
             temperature: 0.2,
+            ...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
             messages: [
               { role: "system", content: AUDIT_SYSTEM_PROMPT },
               { role: "user", content: buildAuditUserPrompt(metadata) }
