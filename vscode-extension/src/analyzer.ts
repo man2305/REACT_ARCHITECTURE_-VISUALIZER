@@ -21,6 +21,9 @@ export type AnalysisResult = {
   name: string;
   graph: ArchitectureGraph;
   analyzedFileCount: number;
+  totalFileCount: number;
+  truncated: boolean;
+  folderCount: number;
 };
 
 export async function analyzeWorkspace(): Promise<AnalysisResult> {
@@ -34,11 +37,14 @@ export async function analyzeWorkspace(): Promise<AnalysisResult> {
   const maxFileBytes = config.get<number>("analysis.maxFileBytes") ?? 500_000;
 
   const root = folders[0];
+  const multiRoot = folders.length > 1;
   const uris = await vscode.workspace.findFiles(SOURCE_GLOB, EXCLUDE_GLOB, 5000);
 
   const files: SourceFile[] = [];
+  let truncated = false;
   for (const uri of uris) {
     if (files.length >= maxFiles) {
+      truncated = true;
       break;
     }
     try {
@@ -51,13 +57,26 @@ export async function analyzeWorkspace(): Promise<AnalysisResult> {
       if (!isTextLike(content)) {
         continue;
       }
-      const relative = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, "/");
+      // In multi-root workspaces, prefix paths with the folder name so files
+      // from different folders stay distinguishable (and open-file can resolve
+      // them to the right folder). Single-folder workspaces keep clean paths.
+      const relative = vscode.workspace
+        .asRelativePath(uri, multiRoot)
+        .replace(/\\/g, "/");
       files.push({ path: relative, content });
     } catch {
       // Skip files that cannot be read (deleted between listing and read, etc.)
     }
   }
 
+  const name = multiRoot ? `${root.name} + ${folders.length - 1} more` : root.name;
   const graph = analyzeProject(files);
-  return { name: root.name, graph, analyzedFileCount: files.length };
+  return {
+    name,
+    graph,
+    analyzedFileCount: files.length,
+    totalFileCount: uris.length,
+    truncated,
+    folderCount: folders.length
+  };
 }

@@ -1,9 +1,24 @@
-export function AuditLoadingState() {
+type AuditLoadingStateProps = {
+  /** "ai" while a server AI audit is in flight, "fallback" while the local rule-based summary is generated. */
+  mode?: "ai" | "fallback";
+};
+
+export function AuditLoadingState({ mode = "ai" }: AuditLoadingStateProps) {
+  const isFallback = mode === "fallback";
+
   return (
     <div className="audit-loading">
       <div className="audit-loading__spinner" aria-hidden="true" />
-      <h2>AI is reviewing your software architecture...</h2>
-      <p>Analyzing component structure, dependencies, and architecture patterns.</p>
+      <h2>
+        {isFallback
+          ? "Generating rule-based summary..."
+          : "AI is reviewing your software architecture..."}
+      </h2>
+      <p>
+        {isFallback
+          ? "OpenAI is not configured, so this summary is built from static analysis only."
+          : "Analyzing component structure, dependencies, and architecture patterns."}
+      </p>
       <div className="audit-loading__steps">
         <LoadingStep label="Generating project metadata" delay={0} />
         <LoadingStep label="Evaluating component hierarchy" delay={400} />

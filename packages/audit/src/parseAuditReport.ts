@@ -1,4 +1,4 @@
-import type { ArchitectureAuditReport, AuditSection } from "./types";
+import type { ArchitectureAuditReport, AuditSection } from "./types.js";
 
 const SECTION_ALIASES: Record<string, string> = {
   "overall architecture score": "score",

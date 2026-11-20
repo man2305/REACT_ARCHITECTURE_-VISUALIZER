@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -8,9 +8,9 @@ import {
   type Edge as FlowEdge
 } from "@xyflow/react";
 import type { ArchitectureWarning, SourceFile } from "@rav/shared";
-import { analyzeFiles, analyzeGitHubRepository } from "./api";
+import { analyzeFiles, analyzeGitHubRepository, isAbortError } from "./api";
 import { AiAuditDashboard } from "./components/AiAuditDashboard";
-import { toFlowGraph } from "./graphProjection";
+import { toFlowGraph } from "@rav/ui";
 import { sampleProject } from "./sampleProject";
 import type { ActiveView, LoadedGraph } from "./types";
 
@@ -23,6 +23,10 @@ const views: Array<{ id: ActiveView; label: string }> = [
   { id: "audit", label: "AI Audit" }
 ];
 
+function nameWithRef(repositoryName: string, ref: string | undefined): string {
+  return ref ? `${repositoryName}@${ref}` : repositoryName;
+}
+
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("architecture");
   const [loadedGraph, setLoadedGraph] = useState<LoadedGraph | null>(null);
@@ -30,6 +34,11 @@ export function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
+  const [githubRef, setGithubRef] = useState("");
+  const [truncation, setTruncation] = useState<{
+    totalFiles?: number;
+    filesSkipped?: number;
+  } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState<{
@@ -37,6 +46,12 @@ export function App() {
     source: string;
     target: string;
   } | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
+
+  // In production the API lives on a separate host (Render), so a missing
+  // VITE_API_URL means every analysis 404s against the static host. In dev
+  // the empty base URL is fine (same-origin via the Vite proxy / local API).
+  const apiUrlMissing = import.meta.env.PROD && !import.meta.env.VITE_API_URL;
 
   const flowGraph = useMemo(() => {
     if (!loadedGraph || activeView === "audit") {
@@ -57,16 +72,42 @@ export function App() {
     );
   }, [activeView, loadedGraph, selectedConnection, isDark, searchQuery]);
 
+  function startAnalysis(): AbortSignal {
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    return controller.signal;
+  }
+
+  function cancelAnalysis() {
+    analysisAbortRef.current?.abort();
+  }
+
+  function applyAnalysisResult(
+    name: string,
+    response: { graph: LoadedGraph["graph"]; truncated?: boolean; totalFiles?: number; filesSkipped?: number }
+  ) {
+    setLoadedGraph({ name, graph: response.graph });
+    setSelectedConnection(null);
+    setTruncation(
+      response.truncated
+        ? { totalFiles: response.totalFiles, filesSkipped: response.filesSkipped }
+        : null
+    );
+  }
+
   async function runAnalysis(name: string, files: SourceFile[]) {
     setIsAnalyzing(true);
     setError(null);
+    setTruncation(null);
 
     try {
-      const response = await analyzeFiles(files);
-      setLoadedGraph({ name, graph: response.graph });
-      setSelectedConnection(null);
+      const response = await analyzeFiles(files, startAnalysis());
+      applyAnalysisResult(name, response);
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : "Failed to analyze project");
+      // A user cancel is not an error — just restore the UI.
+      if (!isAbortError(analysisError)) {
+        setError(analysisError instanceof Error ? analysisError.message : "Failed to analyze project");
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -83,14 +124,17 @@ export function App() {
 
     setIsAnalyzing(true);
     setError(null);
+    setTruncation(null);
 
     try {
-      const response = await analyzeGitHubRepository(repositoryUrl);
+      const ref = githubRef.trim() || undefined;
+      const response = await analyzeGitHubRepository(repositoryUrl, ref, startAnalysis());
       const repositoryName = repositoryUrl.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/i, "");
-      setLoadedGraph({ name: repositoryName, graph: response.graph });
-      setSelectedConnection(null);
+      applyAnalysisResult(nameWithRef(repositoryName, ref), response);
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? analysisError.message : "Failed to load GitHub repository");
+      if (!isAbortError(analysisError)) {
+        setError(analysisError instanceof Error ? analysisError.message : "Failed to load GitHub repository");
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -118,6 +162,13 @@ export function App() {
               </p>
             </div>
 
+            {apiUrlMissing ? (
+              <div className="notice-panel" role="status">
+                VITE_API_URL is not set, so analysis requests will fail in this deployment. Set it to
+                your deployed API URL (see the README&apos;s Configuration section).
+              </div>
+            ) : null}
+
             <section className="control-section">
               <form className="github-form" onSubmit={(event) => void handleGitHubSubmit(event)}>
                 <label htmlFor="github-url">GitHub URL</label>
@@ -126,6 +177,13 @@ export function App() {
                   placeholder="https://github.com/owner/repo"
                   value={githubUrl}
                   onChange={(event) => setGithubUrl(event.target.value)}
+                />
+                <label htmlFor="github-ref">Branch / ref (optional)</label>
+                <input
+                  id="github-ref"
+                  placeholder="Default branch"
+                  value={githubRef}
+                  onChange={(event) => setGithubRef(event.target.value)}
                 />
                 <button className="primary-button" disabled={isAnalyzing} type="submit">
                   {isAnalyzing ? "Loading..." : "Load GitHub Repo"}
@@ -139,7 +197,21 @@ export function App() {
               >
                 {isAnalyzing ? "Analyzing..." : "Load Sample Project"}
               </button>
+
+              {isAnalyzing ? (
+                <button className="cancel-button" type="button" onClick={cancelAnalysis}>
+                  Cancel
+                </button>
+              ) : null}
             </section>
+
+            {truncation ? (
+              <div className="notice-panel" role="status">
+                {truncation.totalFiles !== undefined && truncation.filesSkipped !== undefined
+                  ? `Showing the first ${truncation.totalFiles - truncation.filesSkipped} of ${truncation.totalFiles} files — this analysis is partial.`
+                  : "Some files were skipped — this analysis is partial."}
+              </div>
+            ) : null}
 
             {loadedGraph ? <MetricsPanel loadedGraph={loadedGraph} /> : null}
             {error ? <div className="error-panel">{error}</div> : null}

@@ -1,4 +1,4 @@
-import type { ProjectAuditMetadata } from "./types";
+import type { ProjectAuditMetadata } from "./types.js";
 
 export const AUDIT_SYSTEM_PROMPT = `You are a Staff Software Engineer and Software Architect performing an automated architecture audit of a React project.
 

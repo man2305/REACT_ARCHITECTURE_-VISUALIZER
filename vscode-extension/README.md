@@ -85,10 +85,11 @@ No setup needed. The extension uses a **local metadata analyzer** that builds th
 ### With OpenAI (optional, richer analysis)
 To get AI-written explanations and refactoring suggestions:
 
-1. Open **Settings** (`Ctrl+,`) and search for `reactArchitectureVisualizer`.
-2. Set `reactArchitectureVisualizer.openai.apiKey` to your OpenAI key.
-3. (Optional) Change `reactArchitectureVisualizer.openai.model` (default `gpt-4o-mini`) or `reactArchitectureVisualizer.openai.apiUrl` if you use an OpenAI-compatible endpoint.
-4. Switch to the **AI Audit** tab and click **Run Audit** (or **Re-run Audit**).
+1. Press `Ctrl+Shift+P` (**âŒ˜â‡§P** on macOS) and run **React Architecture Visualizer: Set OpenAI API Key**, then paste your key. It is stored in VS Code's encrypted **SecretStorage** â€” never in `settings.json`, so it is not synced as plaintext by Settings Sync.
+2. (Optional) Change `reactArchitectureVisualizer.openai.model` (default `gpt-4o-mini`) or `reactArchitectureVisualizer.openai.apiUrl` if you use an OpenAI-compatible endpoint.
+3. Switch to the **AI Audit** tab and click **Run Audit** (or **Re-run Audit**).
+
+To remove the key, run **React Architecture Visualizer: Clear OpenAI API Key**. If you previously set a key in settings, it is moved into secure storage automatically the next time the extension activates, and the settings entry is cleared.
 
 The audit report sections are collapsible; the first three open by default.
 
@@ -105,7 +106,6 @@ All settings are under the `reactArchitectureVisualizer.*` namespace (Settings â
 | `reactArchitectureVisualizer.watch.enabled` | `true` | Auto re-analyze on file changes |
 | `reactArchitectureVisualizer.analysis.maxFiles` | `120` | Max source files analyzed |
 | `reactArchitectureVisualizer.analysis.maxFileBytes` | `500000` | Files larger than this (bytes) are skipped |
-| `reactArchitectureVisualizer.openai.apiKey` | `""` | OpenAI key for AI audits (empty = local analyzer) |
 | `reactArchitectureVisualizer.openai.model` | `gpt-4o-mini` | Chat model for audits |
 | `reactArchitectureVisualizer.openai.apiUrl` | OpenAI endpoint | OpenAI-compatible endpoint |
 
@@ -118,6 +118,10 @@ All settings are under the `reactArchitectureVisualizer.*` namespace (Settings â
 | `reactArchitectureVisualizer.show` | React Architecture Visualizer: Show Architecture |
 | `reactArchitectureVisualizer.refresh` | React Architecture Visualizer: Refresh Analysis |
 | `reactArchitectureVisualizer.runAudit` | React Architecture Visualizer: Run AI Audit |
+| `reactArchitectureVisualizer.setOpenAiKey` | React Architecture Visualizer: Set OpenAI API Key |
+| `reactArchitectureVisualizer.clearOpenAiKey` | React Architecture Visualizer: Clear OpenAI API Key |
+
+The OpenAI key is stored in VS Code SecretStorage (encrypted), not in settings. Without a key, audits use the local metadata analyzer and the report says so.
 
 You can also right-click a JavaScript/TypeScript/JSX/TSX file in the editor and choose **React Architecture Visualizer: Show Architecture** from the context menu.
 

@@ -3,8 +3,28 @@ services:
     name: react-architecture-visualizer
     runtime: node
     rootDir: /
-    buildCommand: npm install && npm run build -w @rav/shared && npm run build -w @rav/parser && npm run build -w server
+    buildCommand: npm ci && npm run build -w @rav/shared && npm run build -w @rav/audit && npm run build -w @rav/parser && npm run build -w server
     startCommand: npm run start -w server
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # OpenAI key for POST /api/audit. When unset, /api/audit returns 503
+      # (code: audit_unavailable) and the client falls back to a rule-based
+      # summary. Set in the Render dashboard; never commit a value here.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Optional: override the OpenAI-compatible endpoint (default: https://api.openai.com/v1/chat/completions).
+      - key: OPENAI_API_URL
+        sync: false
+      # Optional: override the audit model (default: gpt-4o-mini).
+      - key: OPENAI_MODEL
+        sync: false
+      # GitHub personal access token: raises the API quota from 60 to 5,000
+      # requests/hour. Without it, repo loads share the unauthenticated quota.
+      - key: GITHUB_TOKEN
+        sync: false
+      # Comma-separated allowed CORS origins for the API (e.g. the Vercel
+      # client URL). When unset, all origins are allowed (development default).
+      - key: CLIENT_ORIGIN
+        sync: false

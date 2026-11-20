@@ -59,6 +59,14 @@
       {
         "command": "reactArchitectureVisualizer.runAudit",
         "title": "React Architecture Visualizer: Run AI Audit"
+      },
+      {
+        "command": "reactArchitectureVisualizer.setOpenAiKey",
+        "title": "React Architecture Visualizer: Set OpenAI API Key"
+      },
+      {
+        "command": "reactArchitectureVisualizer.clearOpenAiKey",
+        "title": "React Architecture Visualizer: Clear OpenAI API Key"
       }
     ],
     "menus": {
@@ -86,11 +94,6 @@
           "type": "number",
           "default": 500000,
           "description": "Files larger than this size (bytes) are skipped."
-        },
-        "reactArchitectureVisualizer.openai.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "OpenAI API key used for the AI architecture audit. Leave empty to use the local metadata analyzer."
         },
         "reactArchitectureVisualizer.openai.model": {
           "type": "string",

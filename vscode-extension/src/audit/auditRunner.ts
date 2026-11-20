@@ -1,19 +1,18 @@
 import * as vscode from "vscode";
 import type { ArchitectureGraph } from "@rav/shared";
 import {
-  generateProjectMetadata,
-  isMetadataEmpty
-} from "../../../client/src/audit/projectMetadata";
-import {
-  isValidAuditResponse,
-  parseAuditMarkdown
-} from "../../../client/src/audit/parseAuditReport";
-import type { ArchitectureAuditReport, AuditError } from "../../../client/src/audit/types";
-import {
   AuditServiceError,
   createMetadataProvider,
-  createOpenAiProvider
-} from "./aiAuditService";
+  createOpenAiProvider,
+  generateProjectMetadata,
+  isMetadataEmpty,
+  isValidAuditResponse,
+  parseAuditMarkdown
+} from "@rav/audit";
+import type { ArchitectureAuditReport, AuditError } from "@rav/audit";
+
+/** SecretStorage key for the OpenAI API key (see E-M8: never store it in settings). */
+export const OPENAI_API_KEY_SECRET = "reactArchitectureVisualizer.openai.apiKey";
 
 export type AuditResult =
   | { report: ArchitectureAuditReport; error?: never }
@@ -35,30 +34,36 @@ function toAuditError(error: unknown): AuditError {
   };
 }
 
-export async function runAudit(projectName: string, graph: ArchitectureGraph): Promise<AuditResult> {
-  const metadata = generateProjectMetadata(projectName, graph);
-
-  if (isMetadataEmpty(metadata)) {
-    return {
-      error: {
-        kind: "empty-metadata",
-        message: "No analyzable project metadata found. Load a repository with React components first."
-      }
-    };
-  }
-
-  const config = vscode.workspace.getConfiguration("reactArchitectureVisualizer");
-  const apiKey = config.get<string>("openai.apiKey")?.trim() ?? "";
-
-  const provider = apiKey
-    ? createOpenAiProvider({
-        apiKey,
-        apiUrl: config.get<string>("openai.apiUrl") ?? "https://api.openai.com/v1/chat/completions",
-        model: config.get<string>("openai.model") ?? "gpt-4o-mini"
-      })
-    : createMetadataProvider();
-
+export async function runAudit(
+  projectName: string,
+  graph: ArchitectureGraph,
+  secrets: vscode.SecretStorage
+): Promise<AuditResult> {
   try {
+    // Metadata generation runs inside the try: a throw here used to reject
+    // before the try block, leaving the webview's audit spinner running forever.
+    const metadata = generateProjectMetadata(projectName, graph);
+
+    if (isMetadataEmpty(metadata)) {
+      return {
+        error: {
+          kind: "empty-metadata",
+          message: "No analyzable project metadata found. Load a repository with React components first."
+        }
+      };
+    }
+
+    const config = vscode.workspace.getConfiguration("reactArchitectureVisualizer");
+    const apiKey = (await secrets.get(OPENAI_API_KEY_SECRET))?.trim() ?? "";
+
+    const provider = apiKey
+      ? createOpenAiProvider({
+          apiKey,
+          apiUrl: config.get<string>("openai.apiUrl") ?? "https://api.openai.com/v1/chat/completions",
+          model: config.get<string>("openai.model") ?? "gpt-4o-mini"
+        })
+      : createMetadataProvider();
+
     const markdown = await provider.generateAudit(metadata);
 
     if (!isValidAuditResponse(markdown)) {

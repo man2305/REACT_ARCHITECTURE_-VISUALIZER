@@ -1,9 +1,8 @@
 import type { ArchitectureGraph } from "@rav/shared";
 import { useAiAudit } from "../hooks/useAiAudit";
-import type { AuditError, AuditSection } from "../audit/types";
+import type { AuditError, AuditSection } from "@rav/audit";
+import { CollapsibleCard, MarkdownRenderer } from "@rav/ui";
 import { AuditLoadingState } from "./AuditLoadingState";
-import { CollapsibleCard } from "./CollapsibleCard";
-import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type AiAuditDashboardProps = {
   projectName: string;
@@ -26,14 +25,14 @@ const SECTION_ICONS: Record<string, string> = {
 };
 
 export function AiAuditDashboard({ projectName, graph, enabled }: AiAuditDashboardProps) {
-  const { report, isLoading, error, retry, fromCache } = useAiAudit({
+  const { report, isLoading, error, retry, fromCache, auditMode } = useAiAudit({
     projectName,
     graph,
     enabled
   });
 
   if (isLoading) {
-    return <AuditLoadingState />;
+    return <AuditLoadingState mode={auditMode} />;
   }
 
   if (error) {
@@ -69,6 +68,12 @@ export function AiAuditDashboard({ projectName, graph, enabled }: AiAuditDashboa
           Re-run Audit
         </button>
       </header>
+
+      {report.provider === "metadata-analyzer" ? (
+        <div className="audit-fallback-banner" role="status">
+          OpenAI not configured — showing a rule-based summary, not an AI audit.
+        </div>
+      ) : null}
 
       <div className="audit-score-hero">
         <div className="audit-score-hero__ring">

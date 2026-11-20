@@ -11,10 +11,12 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@rav/audit": "^0.1.0",
     "@rav/parser": "0.1.0",
     "@rav/shared": "0.1.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.7.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

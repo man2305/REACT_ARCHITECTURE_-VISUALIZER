@@ -126,4 +126,11 @@ export type AnalyzeGithubRequest = {
 
 export type AnalyzeResponse = {
   graph: ArchitectureGraph;
+  /** True when files were dropped due to server caps — the graph is partial. */
+  truncated?: boolean;
+  /** Total source files found before caps were applied. */
+  totalFiles?: number;
+  /** Files dropped due to caps (count limit or per-file size limit). */
+  filesSkipped?: number;
 };
+

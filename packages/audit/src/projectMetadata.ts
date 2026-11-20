@@ -6,7 +6,7 @@ import type {
   FolderNode,
   ProjectAuditMetadata,
   WarningMetadata
-} from "./types";
+} from "./types.js";
 
 function toComponentMetadata(component: ComponentInfo): ComponentMetadata {
   return {
