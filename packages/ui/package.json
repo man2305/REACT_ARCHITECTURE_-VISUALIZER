@@ -26,6 +26,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "type": "module",
-  "types": "dist/index.d.ts",
+  "types": "src/index.ts",
   "version": "0.1.0"
 }

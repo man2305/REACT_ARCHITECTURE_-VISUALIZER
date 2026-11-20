@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "npm run build -w @rav/shared && npm run build -w @rav/audit && npm run build -w @rav/ui && npm run build -w @rav/parser",
     "build": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint ."
