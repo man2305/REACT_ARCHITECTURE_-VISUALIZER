@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -37,10 +37,20 @@ function post(message: WebviewToExtensionMessage): void {
   vscodeApi?.postMessage(message);
 }
 
+function createRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `audit-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+}
+
 export function App() {
   const [graph, setGraph] = useState<ArchitectureGraph | null>(null);
   const [projectName, setProjectName] = useState("");
   const [analyzedFileCount, setAnalyzedFileCount] = useState(0);
+  const [totalFileCount, setTotalFileCount] = useState(0);
+  const [truncated, setTruncated] = useState(false);
+  const [folderCount, setFolderCount] = useState(0);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("architecture");
@@ -50,7 +60,7 @@ export function App() {
   const [report, setReport] = useState<ArchitectureAuditReport | null>(null);
   const [auditError, setAuditError] = useState<AuditError | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
-  const [auditGraphId, setAuditGraphId] = useState<string | null>(null);
+  const latestAuditRequestId = useRef<string | null>(null);
 
   useEffect(() => {
     post({ type: "ready" });
@@ -67,6 +77,9 @@ export function App() {
           setProjectName(message.payload.name);
           setGraph(message.payload.graph);
           setAnalyzedFileCount(message.payload.analyzedFileCount);
+          setTotalFileCount(message.payload.totalFileCount);
+          setTruncated(message.payload.truncated);
+          setFolderCount(message.payload.folderCount);
           setSelectedConnection(null);
           break;
         case "status":
@@ -75,7 +88,16 @@ export function App() {
             setError(message.payload.error);
           }
           break;
-        case "audit-result":
+        case "settings":
+          setWatchEnabled(message.payload.watchEnabled);
+          break;
+        case "audit-result": {
+          // Drop stale results: only the latest request's response (or a
+          // palette-triggered audit, which carries no requestId) is shown.
+          const requestId = message.payload.requestId;
+          if (requestId !== undefined && requestId !== latestAuditRequestId.current) {
+            break;
+          }
           setAuditLoading(false);
           if ("report" in message.payload) {
             setReport(message.payload.report);
@@ -84,6 +106,7 @@ export function App() {
             setAuditError(message.payload.error);
           }
           break;
+        }
       }
     }
 
@@ -91,18 +114,16 @@ export function App() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  useEffect(() => {
-    if (activeView !== "audit" || !graph) {
-      return;
-    }
-    if (report && auditGraphId === graph.generatedAt) {
-      return;
-    }
+  // Audits run ONLY when the user clicks Run Audit / Re-run (see E-M3).
+  // There used to be an auto-run effect here that fired a paid OpenAI call
+  // on every re-analysis while the Audit tab was open.
+  function requestAudit(): void {
+    const requestId = createRequestId();
+    latestAuditRequestId.current = requestId;
     setAuditLoading(true);
     setAuditError(null);
-    setAuditGraphId(graph.generatedAt);
-    post({ type: "audit-request" });
-  }, [activeView, graph, report, auditGraphId]);
+    post({ type: "audit-request", payload: { requestId } });
+  }
 
   const flowGraph = useMemo(() => {
     if (!graph || activeView === "audit") {
@@ -149,6 +170,16 @@ export function App() {
             <span className="app__meta">
               {graph.nodes.length} nodes · {graph.components.length} components ·{" "}
               {graph.warnings.length} warnings · score {graph.metrics.architectureScore}
+              {totalFileCount > 0 ? (
+                <>
+                  {" · "}Analyzed {analyzedFileCount} of {totalFileCount} files
+                </>
+              ) : null}
+              {folderCount > 1 ? (
+                <>
+                  {" · "}{folderCount} workspace folders
+                </>
+              ) : null}
             </span>
           ) : (
             <span className="app__meta">{isAnalyzing ? "Analyzing workspace..." : "Open a React project to begin"}</span>
@@ -167,12 +198,23 @@ export function App() {
             <input
               type="checkbox"
               checked={watchEnabled}
-              onChange={(event) => setWatchEnabled(event.target.checked)}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                setWatchEnabled(enabled);
+                post({ type: "set-watch", payload: { enabled } });
+              }}
             />
             <span>Auto-refresh</span>
           </label>
         </div>
       </header>
+
+      {graph && truncated ? (
+        <div className="truncation-banner" role="alert">
+          Showing the first {analyzedFileCount} of {totalFileCount} files — raise{" "}
+          <code>analysis.maxFiles</code> in settings to analyze the whole project.
+        </div>
+      ) : null}
 
       <div className="app__body">
         <aside className="sidebar">
@@ -210,6 +252,28 @@ export function App() {
                 {view.label}
               </button>
             ))}
+            {graph && activeView !== "audit" ? (
+              <div className="graph-search">
+                <input
+                  type="text"
+                  placeholder="Search components..."
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="graph-search__input"
+                  aria-label="Search components"
+                />
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    className="graph-search__clear"
+                    onClick={() => setSearchQuery("")}
+                    aria-label="Clear search"
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </nav>
 
           {activeView === "audit" ? (
@@ -219,11 +283,7 @@ export function App() {
               error={auditError}
               isLoading={auditLoading}
               hasGraph={Boolean(graph)}
-              onRun={() => {
-                setAuditLoading(true);
-                setAuditError(null);
-                post({ type: "audit-request" });
-              }}
+              onRun={requestAudit}
             />
           ) : graph ? (
             <div className="graph-shell">
@@ -469,13 +529,22 @@ function AuditPanel({
   }
 
   if (error) {
+    const titles: Record<AuditError["kind"], string> = {
+      network: "Network Error",
+      timeout: "Request Timed Out",
+      "invalid-response": "Invalid AI Response",
+      "empty-metadata": "Insufficient Metadata",
+      unknown: "Audit Failed"
+    };
     return (
       <div className="empty-state">
-        <h2>Audit Failed</h2>
+        <h2>{titles[error.kind]}</h2>
         <p>{error.message}</p>
-        <button className="btn" type="button" onClick={onRun}>
-          Retry Audit
-        </button>
+        {error.kind !== "empty-metadata" ? (
+          <button className="btn" type="button" onClick={onRun}>
+            Retry Audit
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -484,7 +553,10 @@ function AuditPanel({
     return (
       <div className="empty-state">
         <h2>AI Architecture Auditor</h2>
-        <p>Click below to run the audit. Uses OpenAI if configured, otherwise local metadata analysis.</p>
+        <p>
+          Click below to run the audit. Uses OpenAI if a key is set (Command Palette → “React
+          Architecture Visualizer: Set OpenAI API Key”), otherwise a local rule-based summary.
+        </p>
         <button className="btn primary" type="button" onClick={onRun}>
           Run Audit
         </button>
@@ -509,6 +581,13 @@ function AuditPanel({
           Re-run Audit
         </button>
       </header>
+
+      {report.provider === "metadata-analyzer" ? (
+        <p className="audit-notice">
+          Rule-based summary — no AI model was used for this report. Set an OpenAI key (Command
+          Palette → “React Architecture Visualizer: Set OpenAI API Key”) for an AI-written audit.
+        </p>
+      ) : null}
 
       <div className="audit-score-hero">
         <div className="audit-score-hero__ring">
