@@ -1,5 +1,5 @@
-import { AUDIT_SYSTEM_PROMPT, buildAuditUserPrompt } from "../../../client/src/audit/aiAuditPrompt";
-import type { AiAuditProvider, ProjectAuditMetadata } from "../../../client/src/audit/types";
+import { AUDIT_SYSTEM_PROMPT, buildAuditUserPrompt } from "./aiAuditPrompt.js";
+import type { AiAuditProvider, ProjectAuditMetadata } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 

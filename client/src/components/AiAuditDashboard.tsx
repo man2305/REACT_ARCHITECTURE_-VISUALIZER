@@ -1,9 +1,8 @@
 import type { ArchitectureGraph } from "@rav/shared";
 import { useAiAudit } from "../hooks/useAiAudit";
-import type { AuditError, AuditSection } from "../audit/types";
+import type { AuditError, AuditSection } from "@rav/audit";
+import { CollapsibleCard, MarkdownRenderer } from "@rav/ui";
 import { AuditLoadingState } from "./AuditLoadingState";
-import { CollapsibleCard } from "./CollapsibleCard";
-import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type AiAuditDashboardProps = {
   projectName: string;

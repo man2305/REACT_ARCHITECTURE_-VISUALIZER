@@ -1,7 +1,8 @@
 import dagre from "@dagrejs/dagre";
 import { Position, type Edge, type Node } from "@xyflow/react";
 import type { ArchitectureGraph, GraphEdgeKind, GraphNodeKind } from "@rav/shared";
-import type { ActiveView } from "./types";
+
+export type ActiveView = "architecture" | "imports" | "routes" | "hooks" | "api" | "audit";
 
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 58;

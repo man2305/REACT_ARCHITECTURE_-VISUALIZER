@@ -1,5 +1,5 @@
 import type { ArchitectureGraph } from "@rav/shared";
-import type { ArchitectureAuditReport, AuditError } from "../../../client/src/audit/types";
+import type { ArchitectureAuditReport, AuditError } from "@rav/audit";
 
 export type ExtensionToWebviewMessage =
   | { type: "graph"; payload: { name: string; graph: ArchitectureGraph; analyzedFileCount: number } }

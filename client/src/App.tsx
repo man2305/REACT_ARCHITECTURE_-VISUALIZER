@@ -10,7 +10,7 @@ import {
 import type { ArchitectureWarning, SourceFile } from "@rav/shared";
 import { analyzeFiles, analyzeGitHubRepository } from "./api";
 import { AiAuditDashboard } from "./components/AiAuditDashboard";
-import { toFlowGraph } from "./graphProjection";
+import { toFlowGraph } from "@rav/ui";
 import { sampleProject } from "./sampleProject";
 import type { ActiveView, LoadedGraph } from "./types";
 

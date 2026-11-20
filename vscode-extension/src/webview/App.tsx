@@ -9,11 +9,9 @@ import {
   type Node as FlowNode
 } from "@xyflow/react";
 import type { ArchitectureGraph, ArchitectureWarning } from "@rav/shared";
-import type { ArchitectureAuditReport, AuditError } from "../../../client/src/audit/types";
-import { toFlowGraph } from "../../../client/src/graphProjection";
-import { CollapsibleCard } from "../../../client/src/components/CollapsibleCard";
-import { MarkdownRenderer } from "../../../client/src/components/MarkdownRenderer";
-import type { ActiveView } from "../../../client/src/types";
+import type { ArchitectureAuditReport, AuditError } from "@rav/audit";
+import { CollapsibleCard, MarkdownRenderer, toFlowGraph } from "@rav/ui";
+import type { ActiveView } from "@rav/ui";
 import { vscodeApi } from "./vscodeApi";
 import type {
   ExtensionToWebviewMessage,

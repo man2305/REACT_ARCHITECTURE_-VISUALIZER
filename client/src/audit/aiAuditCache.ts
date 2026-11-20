@@ -1,4 +1,4 @@
-import type { ArchitectureAuditReport } from "./types";
+import type { ArchitectureAuditReport } from "@rav/audit";
 
 const CACHE_PREFIX = "rav-ai-audit:";
 

@@ -12,8 +12,10 @@ const shared = {
   target: "es2020",
   logLevel: "info",
   alias: {
+    "@rav/audit": path.join(root, "packages/audit/src/index.ts"),
     "@rav/parser": path.join(root, "packages/parser/src/index.ts"),
-    "@rav/shared": path.join(root, "packages/shared/src/index.ts")
+    "@rav/shared": path.join(root, "packages/shared/src/index.ts"),
+    "@rav/ui": path.join(root, "packages/ui/src/index.ts")
   }
 };
 

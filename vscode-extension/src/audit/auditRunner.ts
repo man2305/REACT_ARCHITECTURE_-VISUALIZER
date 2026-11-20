@@ -1,19 +1,15 @@
 import * as vscode from "vscode";
 import type { ArchitectureGraph } from "@rav/shared";
 import {
-  generateProjectMetadata,
-  isMetadataEmpty
-} from "../../../client/src/audit/projectMetadata";
-import {
-  isValidAuditResponse,
-  parseAuditMarkdown
-} from "../../../client/src/audit/parseAuditReport";
-import type { ArchitectureAuditReport, AuditError } from "../../../client/src/audit/types";
-import {
   AuditServiceError,
   createMetadataProvider,
-  createOpenAiProvider
-} from "./aiAuditService";
+  createOpenAiProvider,
+  generateProjectMetadata,
+  isMetadataEmpty,
+  isValidAuditResponse,
+  parseAuditMarkdown
+} from "@rav/audit";
+import type { ArchitectureAuditReport, AuditError } from "@rav/audit";
 
 export type AuditResult =
   | { report: ArchitectureAuditReport; error?: never }

@@ -15,23 +15,19 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
+      "@rav/audit": ["../packages/audit/src/index.ts"],
       "@rav/parser": ["../packages/parser/src/index.ts"],
-      "@rav/shared": ["../packages/shared/src/index.ts"]
+      "@rav/shared": ["../packages/shared/src/index.ts"],
+      "@rav/ui": ["../packages/ui/src/index.ts"]
     }
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
+    "../packages/audit/src/index.ts",
     "../packages/parser/src/index.ts",
     "../packages/shared/src/index.ts",
-    "../client/src/types.ts",
-    "../client/src/graphProjection.tsx",
-    "../client/src/audit/types.ts",
-    "../client/src/audit/projectMetadata.ts",
-    "../client/src/audit/parseAuditReport.ts",
-    "../client/src/audit/aiAuditPrompt.ts",
-    "../client/src/components/CollapsibleCard.tsx",
-    "../client/src/components/MarkdownRenderer.tsx"
+    "../packages/ui/src/index.ts"
   ],
   "exclude": ["node_modules", "dist", ".vscode"]
 }

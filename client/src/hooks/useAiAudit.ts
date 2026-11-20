@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ArchitectureGraph } from "@rav/shared";
-import { AuditServiceError, generateArchitectureAudit, getAuditProvider } from "../audit/aiAuditService";
+import {
+  AuditServiceError,
+  generateProjectMetadata,
+  isMetadataEmpty,
+  isValidAuditResponse,
+  parseAuditMarkdown
+} from "@rav/audit";
+import type { ArchitectureAuditReport, AuditError } from "@rav/audit";
+import { generateArchitectureAudit, getAuditProvider } from "../audit/aiAuditService";
 import { getCachedAudit, setCachedAudit } from "../audit/aiAuditCache";
-import { generateProjectMetadata, isMetadataEmpty } from "../audit/projectMetadata";
-import { isValidAuditResponse, parseAuditMarkdown } from "../audit/parseAuditReport";
-import type { ArchitectureAuditReport, AuditError } from "../audit/types";
 
 type UseAiAuditOptions = {
   projectName: string;
