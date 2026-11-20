@@ -7,10 +7,12 @@ import type {
   RouteInfo
 } from "@rav/shared";
 import type {
+  ArrowFunctionExpression,
   CallExpression,
   ExportDefaultDeclaration,
   ExportSpecifier,
   Expression,
+  FunctionExpression,
   JSXAttribute,
   JSXElement,
   JSXExpressionContainer,
@@ -54,6 +56,25 @@ export type HookDetail = {
   name: string;
   apiCalls: ApiCallInfo[];
   hooks: string[];
+  /** Service functions this hook calls (same naming as FunctionDetail.name). */
+  calls: string[];
+};
+
+/** API calls made inside a module-level function (service/API module or
+ * helper), so they can be propagated to the components that call it. */
+export type FunctionDetail = {
+  /** `getUrls` for a plain function, `urlsApi.list` for an object method,
+   * `default.list` for a default-exported object's method. */
+  name: string;
+  apiCalls: ApiCallInfo[];
+  /** Other module-level functions this one calls (same naming scheme). */
+  calls: string[];
+};
+
+/** Service-function calls made inside one component. */
+export type ComponentFunctionCalls = {
+  name: string;
+  calls: string[];
 };
 
 export type ExtractedFile = {
@@ -67,6 +88,8 @@ export type ExtractedFile = {
   /** Name of the default-exported component, when the file has one. */
   defaultExportName?: string;
   hookDetails: HookDetail[];
+  functionDetails: FunctionDetail[];
+  componentCalls: ComponentFunctionCalls[];
   parseError?: string;
 };
 
@@ -82,6 +105,13 @@ type MutableHookDetail = {
   name: string;
   apiCalls: ApiCallInfo[];
   hooks: Set<string>;
+  calls: Set<string>;
+};
+
+type MutableFunctionDetail = {
+  name: string;
+  apiCalls: ApiCallInfo[];
+  calls: Set<string>;
 };
 
 const PARSER_PLUGINS = [
@@ -121,6 +151,8 @@ export function extractFile(path: string, content: string): ExtractedFile {
   const exportAllSources: string[] = [];
   const componentMap = new Map<string, MutableComponent>();
   const hookDetailMap = new Map<string, MutableHookDetail>();
+  const functionDetailMap = new Map<string, MutableFunctionDetail>();
+  const componentCallsMap = new Map<string, Set<string>>();
   const axiosInstances = new Set<string>();
   const exportedNames = new Set<string>();
   let defaultExportName: string | undefined;
@@ -172,9 +204,38 @@ export function extractFile(path: string, content: string): ExtractedFile {
     if (existing) {
       return existing;
     }
-    const detail: MutableHookDetail = { name, apiCalls: [], hooks: new Set<string>() };
+    const detail: MutableHookDetail = {
+      name,
+      apiCalls: [],
+      hooks: new Set<string>(),
+      calls: new Set<string>()
+    };
     hookDetailMap.set(name, detail);
     return detail;
+  }
+
+  function ensureFunctionDetail(name: string): MutableFunctionDetail {
+    const existing = functionDetailMap.get(name);
+    if (existing) {
+      return existing;
+    }
+    const detail: MutableFunctionDetail = {
+      name,
+      apiCalls: [],
+      calls: new Set<string>()
+    };
+    functionDetailMap.set(name, detail);
+    return detail;
+  }
+
+  function ensureComponentCalls(name: string): Set<string> {
+    const existing = componentCallsMap.get(name);
+    if (existing) {
+      return existing;
+    }
+    const calls = new Set<string>();
+    componentCallsMap.set(name, calls);
+    return calls;
   }
 
   try {
@@ -189,6 +250,22 @@ export function extractFile(path: string, content: string): ExtractedFile {
     // results with no warning at all.
     if (ast.errors && ast.errors.length > 0) {
       parseError = ast.errors.map((error) => error.message).join("; ");
+    }
+
+    // Imported local names, collected up front so the API-call heuristic can
+    // tell an imported HTTP client (`api.get(...)`) from a local object —
+    // independent of traversal order.
+    const importedLocalNames = new Set<string>();
+    for (const statement of ast.program.body) {
+      if (statement.type !== "ImportDeclaration" || statement.importKind === "type") {
+        continue;
+      }
+      for (const specifier of statement.specifiers) {
+        if (specifier.type === "ImportSpecifier" && specifier.importKind === "type") {
+          continue;
+        }
+        importedLocalNames.add(specifier.local.name);
+      }
     }
 
     traverse(ast, {
@@ -402,7 +479,12 @@ export function extractFile(path: string, content: string): ExtractedFile {
         }
 
         const hookName = getHookName(node);
-        const apiCall = getApiCall(node, axiosInstances);
+        const apiCall = getApiCall(node, axiosInstances, importedLocalNames);
+        // A plain call to another function (`getUrls()`, `urlsApi.list()`).
+        // Hook calls and API calls have their own attribution and are not
+        // also recorded as function calls.
+        const callName =
+          !hookName && !apiCall ? getFunctionCallName(node) : undefined;
 
         const component = findNearestComponent(callPath, componentMap);
         if (component) {
@@ -414,6 +496,9 @@ export function extractFile(path: string, content: string): ExtractedFile {
               ...apiCall,
               line: node.loc?.start.line
             });
+          }
+          if (callName) {
+            ensureComponentCalls(component.name).add(callName);
           }
           return;
         }
@@ -431,6 +516,27 @@ export function extractFile(path: string, content: string): ExtractedFile {
               ...apiCall,
               line: node.loc?.start.line
             });
+          }
+          if (callName) {
+            detail.calls.add(callName);
+          }
+          return;
+        }
+
+        // Calls inside a module-level function (service/API module, helper)
+        // are attributed to that function, so the analyzer can propagate them
+        // to the components that call it.
+        const fn = findNearestModuleFunction(callPath);
+        if (fn) {
+          const detail = ensureFunctionDetail(fn);
+          if (apiCall) {
+            detail.apiCalls.push({
+              ...apiCall,
+              line: node.loc?.start.line
+            });
+          }
+          if (callName) {
+            detail.calls.add(callName);
           }
         }
       }
@@ -507,7 +613,17 @@ export function extractFile(path: string, content: string): ExtractedFile {
       hookDetails: [...hookDetailMap.values()].map((detail) => ({
         name: detail.name,
         apiCalls: detail.apiCalls,
-        hooks: [...detail.hooks].sort()
+        hooks: [...detail.hooks].sort(),
+        calls: [...detail.calls].sort()
+      })),
+      functionDetails: [...functionDetailMap.values()].map((detail) => ({
+        name: detail.name,
+        apiCalls: detail.apiCalls,
+        calls: [...detail.calls].sort()
+      })),
+      componentCalls: [...componentCallsMap.entries()].map(([name, calls]) => ({
+        name,
+        calls: [...calls].sort()
       })),
       parseError
     };
@@ -520,6 +636,8 @@ export function extractFile(path: string, content: string): ExtractedFile {
       reExports: [],
       exportAllSources: [],
       hookDetails: [],
+      functionDetails: [],
+      componentCalls: [],
       parseError:
         parseError ?? (error instanceof Error ? error.message : "Unknown parse error")
     };
@@ -707,6 +825,120 @@ function findNearestComponent(
   return undefined;
 }
 
+/**
+ * Local name of the function being called: `getUrls` for a plain call,
+ * `urlsApi.list` for a member call. Returns undefined for computed members,
+ * chained calls, and non-identifier callees.
+ */
+function getFunctionCallName(node: CallExpression): string | undefined {
+  const callee = node.callee;
+  if (callee.type === "Identifier") {
+    return callee.name;
+  }
+  if (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    callee.object.type === "Identifier" &&
+    callee.property.type === "Identifier"
+  ) {
+    return `${callee.object.name}.${callee.property.name}`;
+  }
+  return undefined;
+}
+
+function isFunctionNode(
+  node: Node
+): node is ArrowFunctionExpression | FunctionExpression {
+  return (
+    node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression"
+  );
+}
+
+/** True when the declaration sits directly in the module body (or in an
+ * `export` statement at the module body). */
+function isModuleLevelDeclaration(path: NodePath<Node>): boolean {
+  const parent = path.parentPath;
+  if (!parent) {
+    return false;
+  }
+  if (parent.isProgram()) {
+    return true;
+  }
+  if (parent.isExportNamedDeclaration() || parent.isExportDefaultDeclaration()) {
+    return parent.parentPath?.isProgram() ?? false;
+  }
+  return false;
+}
+
+/** True when the declarator's `const`/`let`/`var` sits at the module body. */
+function isModuleLevelDeclarator(path: NodePath<Node>): boolean {
+  const parent = path.parentPath;
+  if (!parent?.isVariableDeclaration()) {
+    return false;
+  }
+  const grandparent = parent.parentPath;
+  if (!grandparent) {
+    return false;
+  }
+  if (grandparent.isProgram()) {
+    return true;
+  }
+  if (grandparent.isExportNamedDeclaration()) {
+    return grandparent.parentPath?.isProgram() ?? false;
+  }
+  return false;
+}
+
+/**
+ * Walk up to the enclosing module-level function, if any: a top-level
+ * function declaration (`getUrls`), a top-level variable holding a function
+ * (`getUrls`), or a method of a top-level object (`urlsApi.list`,
+ * `default.list` for a default-exported object). Nested functions attribute
+ * to their outermost module-level function. Components and hooks are checked
+ * before this, so they never land here.
+ */
+function findNearestModuleFunction(path: NodePath<Node>): string | undefined {
+  let current: NodePath<Node> | null = path;
+  let methodName: string | undefined;
+  while (current) {
+    const node = current.node;
+    if (
+      node.type === "ObjectMethod" &&
+      node.key.type === "Identifier" &&
+      !methodName
+    ) {
+      methodName = node.key.name;
+    }
+    if (
+      node.type === "ObjectProperty" &&
+      node.key.type === "Identifier" &&
+      isFunctionNode(node.value) &&
+      !methodName
+    ) {
+      methodName = node.key.name;
+    }
+    if (
+      node.type === "FunctionDeclaration" &&
+      node.id &&
+      isModuleLevelDeclaration(current)
+    ) {
+      return node.id.name;
+    }
+    if (
+      node.type === "VariableDeclarator" &&
+      node.id.type === "Identifier" &&
+      isModuleLevelDeclarator(current)
+    ) {
+      return methodName ? `${node.id.name}.${methodName}` : node.id.name;
+    }
+    if (node.type === "ExportDefaultDeclaration" && methodName) {
+      return `default.${methodName}`;
+    }
+    current = current.parentPath;
+  }
+  return undefined;
+}
+
 /** Walk up to the enclosing custom hook function (`useXxx`), if any. */
 function findNearestHook(path: NodePath<Node>): string | undefined {
   let current: NodePath<Node> | null = path;
@@ -842,7 +1074,11 @@ function getHookName(node: CallExpression): string | undefined {
   return undefined;
 }
 
-function getApiCall(node: CallExpression, axiosInstances: Set<string>): ApiCallInfo | undefined {
+function getApiCall(
+  node: CallExpression,
+  axiosInstances: Set<string>,
+  importedNames: Set<string>
+): ApiCallInfo | undefined {
   if (isFetchCall(node)) {
     return {
       method: getFetchMethod(node.arguments[1]) ?? "GET",
@@ -860,25 +1096,59 @@ function getApiCall(node: CallExpression, axiosInstances: Set<string>): ApiCallI
           ? property.value
           : undefined;
 
-    if (
-      object.type === "Identifier" &&
-      (object.name === "axios" || axiosInstances.has(object.name)) &&
-      propertyName
-    ) {
+    if (object.type === "Identifier" && propertyName) {
       // Only real HTTP verbs count: `axios.create()`, `axios.all()`,
       // `axios.isAxiosError()` are not requests.
       const method = propertyName.toLowerCase();
-      if (HTTP_METHODS.has(method)) {
+      if (!HTTP_METHODS.has(method)) {
+        return undefined;
+      }
+      if (object.name === "axios" || axiosInstances.has(object.name)) {
         return {
           method: method.toUpperCase(),
           endpoint:
             getStringExpression(node.arguments[0]) ?? `dynamic axios.${method}()`
         };
       }
+      // Imported HTTP client: the standard pattern creates the axios instance
+      // in one module (`api = axios.create(...)`) and imports it everywhere
+      // else, so per-file instance tracking misses those calls. An imported
+      // object calling an HTTP verb with a URL-like first argument is an API
+      // call. (A local object such as an Express `router` is not imported,
+      // so server-route definitions are not counted.)
+      if (
+        importedNames.has(object.name) &&
+        isUrlLikeArgument(node.arguments[0])
+      ) {
+        return {
+          method: method.toUpperCase(),
+          endpoint:
+            getStringExpression(node.arguments[0]) ??
+            `dynamic ${object.name}.${method}()`
+        };
+      }
     }
   }
 
   return undefined;
+}
+
+/** True when the argument is a URL-like literal: a string or template
+ * starting with `/` or `http`. */
+function isUrlLikeArgument(
+  arg: CallExpression["arguments"][number] | undefined
+): boolean {
+  if (!arg) {
+    return false;
+  }
+  if (arg.type === "StringLiteral") {
+    return arg.value.startsWith("/") || arg.value.startsWith("http");
+  }
+  if (arg.type === "TemplateLiteral") {
+    const first = arg.quasis[0]?.value.cooked ?? "";
+    return first.startsWith("/") || first.startsWith("http");
+  }
+  return false;
 }
 
 function isFetchCall(node: CallExpression): boolean {

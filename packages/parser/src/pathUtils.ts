@@ -58,7 +58,9 @@ export function resolveImport(
     }
 
     if (source === cleanPrefix) {
-      const resolved = lookupPath(cleanTarget, pathIndex);
+      const resolved =
+        lookupPath(cleanTarget, pathIndex) ??
+        lookupPathSuffix(fromPath, cleanTarget, pathIndex);
       if (resolved) {
         return resolved;
       }
@@ -68,7 +70,9 @@ export function resolveImport(
     if (source.startsWith(`${cleanPrefix}/`)) {
       const rest = source.slice(cleanPrefix.length + 1);
       const joined = cleanTarget ? `${cleanTarget}/${rest}` : rest;
-      const resolved = lookupPath(joined, pathIndex);
+      const resolved =
+        lookupPath(joined, pathIndex) ??
+        lookupPathSuffix(fromPath, joined, pathIndex);
       if (resolved) {
         return resolved;
       }
@@ -80,6 +84,43 @@ export function resolveImport(
 
 function lookupPath(target: string, pathIndex: Map<string, string>): string | undefined {
   return pathIndex.get(withoutExtension(target));
+}
+
+/**
+ * Fall back for aliases when the target root is nested: a repo whose sources
+ * live under `frontend/src/` (or `client/src/`, `packages/app/src/`, ...) has
+ * no top-level `src/`, so `@/components/Button` cannot resolve to
+ * `src/components/Button`. Match the target as a path suffix instead
+ * (`frontend/src/components/Button`). Ambiguous matches stay unresolved,
+ * except when exactly one match sits under the importing file's own top-level
+ * directory (the usual monorepo case: a file in `frontend/` means
+ * `frontend/src/`).
+ */
+function lookupPathSuffix(
+  fromPath: string,
+  target: string,
+  pathIndex: Map<string, string>
+): string | undefined {
+  const suffix = `/${withoutExtension(target)}`;
+  const matches = new Set<string>();
+  for (const [key, value] of pathIndex) {
+    if (key.endsWith(suffix)) {
+      matches.add(value);
+    }
+  }
+
+  if (matches.size === 0) {
+    return undefined;
+  }
+  if (matches.size === 1) {
+    return [...matches][0];
+  }
+
+  const topDir = normalizePath(fromPath).split("/")[0];
+  const local = [...matches].filter((match) =>
+    normalizePath(match).startsWith(`${topDir}/`)
+  );
+  return local.length === 1 ? local[0] : undefined;
 }
 
 export function resolveRelativeImport(

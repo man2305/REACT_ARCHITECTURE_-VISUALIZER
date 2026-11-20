@@ -10,7 +10,9 @@ import type {
 } from "@rav/shared";
 import { extractFile } from "./astExtractors.js";
 import type {
+  ComponentFunctionCalls,
   DynamicImportInfo,
+  FunctionDetail,
   HookDetail,
   ImportBinding,
   ReExportInfo
@@ -62,6 +64,8 @@ type FileAnalysis = {
   exportAllSources: string[];
   defaultExportName?: string;
   hookDetails: HookDetail[];
+  functionDetails: FunctionDetail[];
+  componentCalls: ComponentFunctionCalls[];
 };
 
 /** Project-wide indexes for resolving names to components. */
@@ -154,12 +158,17 @@ export function analyzeProject(
         .map((source) => resolve(source))
         .filter((resolved): resolved is string => resolved !== undefined),
       defaultExportName: result.defaultExportName,
-      hookDetails: result.hookDetails
+      hookDetails: result.hookDetails,
+      functionDetails: result.functionDetails,
+      componentCalls: result.componentCalls
     });
   }
 
   const components = analyses.flatMap((analysis) => analysis.components);
   const context = buildResolutionContext(analyses, components);
+  // Service-function propagation runs first so hooks that call service
+  // functions inherit their API calls before hook propagation runs.
+  propagateFunctionApiCalls(components, analyses, context);
   propagateHookApiCalls(components, analyses);
 
   warnings.push(...detectLargeComponents(components));
@@ -287,6 +296,200 @@ function buildResolutionContext(
   }
 
   return context;
+}
+
+/**
+ * API calls made inside a service module belong to the components that call
+ * it: `urlsApi.list()` in `api/urls.api.ts` is triggered by the component
+ * that calls it. Propagate each module-level function's calls (transitively,
+ * through functions calling functions, across files via import bindings and
+ * barrel re-exports) into its callers — components directly, and hooks first
+ * so hook propagation carries them onward.
+ */
+function propagateFunctionApiCalls(
+  components: ComponentInfo[],
+  analyses: FileAnalysis[],
+  context: ResolutionContext
+): void {
+  const defsByFile = new Map<string, Map<string, FunctionDetail>>();
+  for (const analysis of analyses) {
+    const defs = new Map<string, FunctionDetail>();
+    for (const detail of analysis.functionDetails) {
+      const existing = defs.get(detail.name);
+      if (existing) {
+        existing.apiCalls.push(...detail.apiCalls);
+        existing.calls.push(...detail.calls);
+      } else {
+        defs.set(detail.name, { ...detail, calls: [...detail.calls] });
+      }
+    }
+    defsByFile.set(analysis.path, defs);
+  }
+  if ([...defsByFile.values()].every((defs) => defs.size === 0)) {
+    return;
+  }
+
+  /** Find a function def, following barrel re-exports (`export { X } from`,
+   * `export *`). */
+  function findDef(
+    file: string,
+    key: string,
+    seen: Set<string>
+  ): { file: string; key: string } | undefined {
+    const marker = `${file}#${key}`;
+    if (seen.has(marker)) {
+      return undefined;
+    }
+    seen.add(marker);
+    if (defsByFile.get(file)?.has(key)) {
+      return { file, key };
+    }
+    const dot = key.indexOf(".");
+    const baseName = dot === -1 ? key : key.slice(0, dot);
+    const method = dot === -1 ? undefined : key.slice(dot + 1);
+    for (const reExport of context.reExportsByFile.get(file) ?? []) {
+      if (reExport.exportedName !== baseName || !reExport.resolvedSource) {
+        continue;
+      }
+      const nextKey = method
+        ? `${reExport.localName}.${method}`
+        : reExport.localName;
+      const found = findDef(reExport.resolvedSource, nextKey, seen);
+      if (found) {
+        return found;
+      }
+    }
+    for (const source of context.exportAllByFile.get(file) ?? []) {
+      const found = findDef(source, key, seen);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+
+  /** Resolve a call as written in `fromFile` to the file + def key that
+   * implements it: same-file defs first, then import bindings (translating
+   * local names through aliases, e.g. `api.list` via
+   * `import { urlsApi as api }` resolves to `urlsApi.list`). */
+  function resolveCall(
+    fromFile: string,
+    callName: string
+  ): { file: string; key: string } | undefined {
+    if (defsByFile.get(fromFile)?.has(callName)) {
+      return { file: fromFile, key: callName };
+    }
+    const dot = callName.indexOf(".");
+    const baseName = dot === -1 ? callName : callName.slice(0, dot);
+    const method = dot === -1 ? undefined : callName.slice(dot + 1);
+    const binding = (context.bindingsByFile.get(fromFile) ?? []).find(
+      (candidate) => candidate.localName === baseName
+    );
+    if (!binding?.resolvedPath) {
+      return undefined;
+    }
+    const importedKey = method
+      ? `${binding.importedName}.${method}`
+      : binding.importedName;
+    return findDef(binding.resolvedPath, importedKey, new Set());
+  }
+
+  // Transitive closure with a cycle guard, mirroring the hook collector.
+  // Results computed while a cycle was cut are not memoized.
+  const transitive = new Map<string, ApiCallInfo[]>();
+  function collect(
+    file: string,
+    key: string,
+    visiting: Set<string>
+  ): { calls: ApiCallInfo[]; tainted: boolean } {
+    const memoKey = `${file}#${key}`;
+    const cached = transitive.get(memoKey);
+    if (cached) {
+      return { calls: cached, tainted: false };
+    }
+    if (visiting.has(memoKey)) {
+      return { calls: [], tainted: true };
+    }
+    const def = defsByFile.get(file)?.get(key);
+    if (!def) {
+      return { calls: [], tainted: false };
+    }
+    visiting.add(memoKey);
+    const calls = [...def.apiCalls];
+    let tainted = false;
+    for (const callee of def.calls) {
+      const resolved = resolveCall(file, callee);
+      if (!resolved) {
+        continue;
+      }
+      const sub = collect(resolved.file, resolved.key, visiting);
+      tainted = tainted || sub.tainted;
+      calls.push(...sub.calls);
+    }
+    visiting.delete(memoKey);
+    if (!tainted) {
+      transitive.set(memoKey, calls);
+    }
+    return { calls, tainted };
+  }
+
+  // Hooks calling service functions inherit their API calls, so the hook
+  // propagation that runs next carries them into components.
+  for (const analysis of analyses) {
+    for (const hook of analysis.hookDetails) {
+      const seen = new Set(
+        hook.apiCalls.map((call) => `${call.method}:${call.endpoint}`)
+      );
+      for (const callee of hook.calls) {
+        const resolved = resolveCall(analysis.path, callee);
+        if (!resolved) {
+          continue;
+        }
+        for (const call of collect(resolved.file, resolved.key, new Set())
+          .calls) {
+          const key = `${call.method}:${call.endpoint}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            hook.apiCalls.push(call);
+          }
+        }
+      }
+    }
+  }
+
+  const callsByComponent = new Map<string, string[]>();
+  for (const analysis of analyses) {
+    for (const entry of analysis.componentCalls) {
+      callsByComponent.set(
+        componentKey(analysis.path, entry.name),
+        entry.calls
+      );
+    }
+  }
+
+  for (const component of components) {
+    const calls = callsByComponent.get(componentKeyOf(component));
+    if (!calls) {
+      continue;
+    }
+    const seen = new Set(
+      component.apiCalls.map((call) => `${call.method}:${call.endpoint}`)
+    );
+    for (const callee of calls) {
+      const resolved = resolveCall(component.filePath, callee);
+      if (!resolved) {
+        continue;
+      }
+      for (const call of collect(resolved.file, resolved.key, new Set())
+        .calls) {
+        const key = `${call.method}:${call.endpoint}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          component.apiCalls.push(call);
+        }
+      }
+    }
+  }
 }
 
 /**
